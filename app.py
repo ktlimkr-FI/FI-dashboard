@@ -47,25 +47,25 @@ with st.spinner('데이터를 분석 중입니다...'):
     actual_days = min(len(all_df), days_to_show)
     display_df = all_df.tail(actual_days)
 
-# 5. 시각화 로직 (선택에 따라 분기)
+# 5. 시각화 로직
 fig = go.Figure()
 
 if "선 그래프" in chart_type:
-    # 선 그래프 설정
     fig.add_trace(go.Scatter(
         x=display_df.index, 
         y=display_df['value'],
         mode='lines',
-        line=dict(color='royalblue', width=1.5),
+        line=dict(color='#1f77b4', width=1.5), # 세련된 블루톤
         fill='tozeroy',
         name='Repo Value'
     ))
 else:
-    # 바 그래프 설정
+    # 바 그래프 가시성 개선 설정
     fig.add_trace(go.Bar(
         x=display_df.index, 
         y=display_df['value'],
-        marker_color='royalblue',
+        marker_color='midnightblue', # 훨씬 진한 남색으로 변경
+        marker_line_width=0,         # 막대 테두리 선을 없애야 촘촘할 때 더 잘 보입니다
         name='Repo Value'
     ))
 
@@ -75,6 +75,7 @@ fig.update_layout(
     yaxis_title='Millions of Dollars',
     template='plotly_white',
     hovermode='x unified',
+    bargap=0,  # ⭐ 핵심: 막대 사이의 간격을 0으로 만들어 빈 공간을 없앱니다
     margin=dict(l=0, r=0, t=50, b=0)
 )
 

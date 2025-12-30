@@ -133,7 +133,7 @@ with tab1:
     fig_season.update_yaxes(title_text="Spread (%)", secondary_y=True)
     st.plotly_chart(fig_season, use_container_width=True)
 
-# --- 탭 2: 금리 분석 (Target Range 음영 포함) ---
+# --- 탭 2: 금리 분석 (음영 농도 강화 버전) ---
 with tab2:
     st.subheader("SOFR vs Fed Target Range")
     r_df = pd.concat([
@@ -144,11 +144,32 @@ with tab2:
     
     if not r_df.empty:
         fig2 = go.Figure()
+        
+        # 하단 라인 (투명)
         fig2.add_trace(go.Scatter(x=r_df.index, y=r_df['DFEDTARL'], mode='lines', line=dict(width=0), showlegend=False))
-        fig2.add_trace(go.Scatter(x=r_df.index, y=r_df['DFEDTARU'], mode='lines', line=dict(width=0), fill='tonexty', fillcolor='rgba(173, 216, 230, 0.3)', name='Target Range'))
-        fig2.add_trace(go.Scatter(x=r_df.index, y=r_df['SOFR'], name='SOFR', line=dict(color='darkblue', width=2)))
-        fig2.add_trace(go.Scatter(x=r_df.index, y=r_df['SOFR99'], name='SOFR 99th', line=dict(color='orange', width=1, dash='dot')))
-        fig2.update_layout(title="SOFR & Target Range Trend", template='plotly_white', hovermode='x unified')
+        
+        # 상단 라인 및 음영 (색상을 더 진하게 변경)
+        fig2.add_trace(go.Scatter(
+            x=r_df.index, 
+            y=r_df['DFEDTARU'], 
+            mode='lines', 
+            line=dict(width=0), 
+            fill='tonexty', 
+            # 기존 0.3에서 0.6으로 농도 강화, 색상을 약간 더 깊은 블루로 변경
+            fillcolor='rgba(100, 149, 237, 0.6)', 
+            name='Target Range'
+        ))
+        
+        # SOFR 및 SOFR 99th 라인
+        fig2.add_trace(go.Scatter(x=r_df.index, y=r_df['SOFR'], name='SOFR', line=dict(color='darkblue', width=2.5)))
+        fig2.add_trace(go.Scatter(x=r_df.index, y=r_df['SOFR99'], name='SOFR 99th', line=dict(color='orange', width=1.5, dash='dot')))
+        
+        fig2.update_layout(
+            title="SOFR & Target Range Trend (Shaded Area Enhanced)", 
+            template='plotly_white', 
+            hovermode='x unified',
+            yaxis_title="Percent (%)"
+        )
         st.plotly_chart(fig2, use_container_width=True)
 
 # --- 탭 3: 유동성&달러 (이중 축 및 개별 선택 옵션 포함) ---

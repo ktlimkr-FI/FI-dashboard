@@ -29,7 +29,7 @@ fred = Fred(api_key=FRED_API_KEY)
 # 3. 사이드바 설정
 st.sidebar.header("📅 조회 기간 설정")
 period_options = {"6개월": 180, "1년": 365, "3년": 1095, "5년": 1825, "10년": 3650}
-selected_label = st.sidebar.selectbox("기간 선택", options=list(period_options.keys()), index=4)
+selected_label = st.sidebar.selectbox("기간 선택", options=list(period_options.keys()), index=2)
 days_to_show = period_options[selected_label]
 
 # 4. 데이터 로드 함수들 (캐싱 적용)

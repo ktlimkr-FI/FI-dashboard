@@ -5,3 +5,5 @@ streamlit
 yfinance
 pytz
 requests
+lxml
+html5lib

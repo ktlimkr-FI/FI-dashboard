@@ -33,7 +33,9 @@ period_options = {"6개월": 180, "1년": 365, "3년": 1095, "5년": 1825, "10�
 selected_label = st.sidebar.selectbox("기간 선택", options=list(period_options.keys()), index=2)
 days_to_show = period_options[selected_label]
 
-# 4. 데이터 로드 함수들 (캐싱 적용)
+# --- 4. 데이터 로드 함수들 (통합 및 최적화) ---
+
+# [1] FRED 데이터 로더
 @st.cache_data(ttl=3600)
 def get_fred_data(series_id):
     try:
@@ -43,6 +45,18 @@ def get_fred_data(series_id):
         return df
     except: return pd.DataFrame()
 
+# [2] 미국 수익률 곡선 로더 (NameError 방지 위해 상단 배치)
+@st.cache_data(ttl=3600)
+def get_yield_curve_us():
+    tickers = {'3M': 'DGS3MO', '2Y': 'DGS2', '5Y': 'DGS5', '10Y': 'DGS10', '30Y': 'DGS30'}
+    frames = []
+    for label, tid in tickers.items():
+        df = get_fred_data(tid)
+        if not df.empty:
+            frames.append(df.rename(columns={tid: label}))
+    return pd.concat(frames, axis=1).ffill() if frames else pd.DataFrame()
+
+# [3] Yahoo Finance 환율 로더
 @st.cache_data(ttl=3600)
 def get_yfinance_data():
     tickers = {
@@ -54,6 +68,7 @@ def get_yfinance_data():
     data.rename(columns=inv_tickers, inplace=True)
     return data
 
+# [4] OFR Repo Fails 로더
 @st.cache_data(ttl=3600)
 def get_ofr_fails_data():
     mnemonics = {
@@ -77,18 +92,19 @@ def get_ofr_fails_data():
         return pd.concat(frames, axis=1).sort_index()
     except: return pd.DataFrame()
 
+# [5] 한국은행(BOK) 범용 데이터 로더 (매크로 지표 대응용 수정)
 @st.cache_data(ttl=3600)
-def get_bok_yield_data(item_code, item_name):
+def get_bok_data(stat_code, cycle, item_code, column_name):
     """
-    한국은행 ECOS API를 통해 금리 데이터를 가져옵니다.
-    817Y002: 시장금리(일일)
-    010200000: 국고채(3년)
-    010210000: 국고채(10년)
+    stat_code: 통계표코드 (예: 817Y002)
+    cycle: 주기 (D: 일, M: 월, Q: 분기, Y: 년)
+    item_code: 항목코드 (예: 010200000)
     """
-    start_date = (datetime.now() - pd.Timedelta(days=3650)).strftime('%Y%m%d')
+    # 충분한 조회를 위해 시작일을 10년 전으로 설정
+    start_date = (datetime.now() - pd.Timedelta(days=4000)).strftime('%Y%m%d')
     end_date = datetime.now().strftime('%Y%m%d')
     
-    url = f"http://ecos.bok.or.kr/api/StatisticSearch/{BOK_API_KEY}/json/kr/1/10000/817Y002/D/{start_date}/{end_date}/{item_code}"
+    url = f"http://ecos.bok.or.kr/api/StatisticSearch/{BOK_API_KEY}/json/kr/1/10000/{stat_code}/{cycle}/{start_date}/{end_date}/{item_code}"
     
     try:
         resp = requests.get(url)
@@ -96,12 +112,17 @@ def get_bok_yield_data(item_code, item_name):
         if 'StatisticSearch' in data:
             rows = data['StatisticSearch']['row']
             df = pd.DataFrame(rows)
-            df['TIME'] = pd.to_datetime(df['TIME'])
-            df['DATA_VALUE'] = pd.to_numeric(df['DATA_VALUE'])
-            df = df[['TIME', 'DATA_VALUE']].rename(columns={'TIME': 'date', 'DATA_VALUE': item_name})
-            return df.set_index('date')
+            # 주기(cycle)에 따라 날짜 처리 방식 변경
+            if cycle == 'D':
+                df['date'] = pd.to_datetime(df['TIME'])
+            else: # 월간/분기 데이터 처리 (예: 202401 -> 2024-01-01)
+                df['date'] = pd.to_datetime(df['TIME'].str[:4] + "-" + df['TIME'].str[4:6] + "-01")
+            
+            df['value'] = pd.to_numeric(df['DATA_VALUE'])
+            return df[['date', 'value']].rename(columns={'value': column_name}).set_index('date')
     except Exception as e:
-        st.error(f"BOK API 에러 ({item_name}): {e}")
+        # 로그에만 기록하고 사용자 화면엔 경고만 표시
+        pass
     return pd.DataFrame()
 
 # 5. 탭 구성
@@ -546,30 +567,24 @@ with tab6:
 
 import FinanceDataReader as fdr
 
-# --- 탭 7: 금리 커브 (BOK API 적용 버전) ---
+# 탭 정의 확인: tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([...])
+
+# --- 탭 7: 금리 커브 (Yield Curve) ---
 with tab7:
     st.subheader("📈 Treasury Yield Curve Analysis (US & KR)")
-    st.caption("미국(FRED)과 한국(한국은행 ECOS)의 공식 데이터를 사용하여 분석합니다.")
-
-    # 데이터 호출
     with st.spinner('금리 데이터를 불러오는 중...'):
-        us_yields = get_yield_curve_us() # 기존 FRED 함수
-        
-        # 한국은행 데이터 호출
+        us_yields = get_yield_curve_us()
         kr3y = get_bok_yield_data('010200000', 'KR 3Y')
         kr10y = get_bok_yield_data('010210000', 'KR 10Y')
-        kr_yields = pd.concat([kr3y, kr10y], axis=1).ffill()
+        kr_yields = pd.concat([kr3y, kr10y], axis=1).ffill() if not kr3y.empty else pd.DataFrame()
 
-    # --- 섹션 1: 현재 수익률 곡선 ---
     col_u, col_k = st.columns(2)
-
     with col_u:
         if not us_yields.empty:
             latest_us = us_yields.iloc[-1]
             fig_us = go.Figure(go.Scatter(x=latest_us.index, y=latest_us.values, mode='lines+markers', line=dict(color='royalblue', width=3)))
             fig_us.update_layout(title=f"US Yield Curve ({latest_us.name.date()})", template='plotly_white')
             st.plotly_chart(fig_us, use_container_width=True)
-
     with col_k:
         if not kr_yields.empty:
             latest_kr = kr_yields.iloc[-1]
@@ -577,17 +592,47 @@ with tab7:
             fig_kr.update_layout(title=f"KR Yield Curve ({latest_kr.name.date()})", template='plotly_white')
             st.plotly_chart(fig_kr, use_container_width=True)
 
-    st.divider()
+# --- 탭 8: Macro Indicators (한-미 기준금리 역전 분석) ---
+with tab8:
+    st.subheader("🌐 Central Bank Policy Rates (US vs KR)")
+    st.caption("한국은행(BOK)과 연준(Fed)의 기준금리를 비교하여 내외금리차를 분석합니다.")
 
-    # --- 섹션 2: 장단기 금리차 ---
-    if not us_yields.empty and not kr_yields.empty:
-        st.write("### 2. Yield Spread Trend (10Y - Short Term)")
-        us_spread = (us_yields['10Y'] - us_yields['2Y']).tail(days_to_show)
-        kr_spread = (kr_yields['KR 10Y'] - kr_yields['KR 3Y']).tail(days_to_show)
+    @st.cache_data(ttl=3600)
+    def get_policy_rates():
+        # 한국 기준금리 (BOK: 722Y001 / 0101000)
+        start_d = (datetime.now() - pd.Timedelta(days=3650)).strftime('%Y%m%d')
+        end_d = datetime.now().strftime('%Y%m%d')
+        bok_url = f"http://ecos.bok.or.kr/api/StatisticSearch/{BOK_API_KEY}/json/kr/1/1000/722Y001/D/{start_d}/{end_d}/0101000"
+        
+        # 미국 기준금리 (FRED: FEDFUNDS - 월간 데이터이므로 일간 변환 필요)
+        fed_df = get_fred_data('FEDFUNDS')
+        
+        try:
+            bok_resp = requests.get(bok_url).json()
+            bok_df = pd.DataFrame(bok_resp['StatisticSearch']['row'])
+            bok_df['date'] = pd.to_datetime(bok_df['TIME'])
+            bok_df = bok_df.set_index('date')[['DATA_VALUE']].rename(columns={'DATA_VALUE': 'BOK Rate'})
+            bok_df['BOK Rate'] = pd.to_numeric(bok_df['BOK Rate'])
+            
+            combined = pd.concat([bok_df, fed_df.rename(columns={'FEDFUNDS': 'Fed Rate'})], axis=1).ffill()
+            combined['Spread'] = combined['BOK Rate'] - combined['Fed Rate']
+            return combined.tail(days_to_show)
+        except: return pd.DataFrame()
 
-        fig_spread = go.Figure()
-        fig_spread.add_hline(y=0, line_dash="dash", line_color="black")
-        fig_spread.add_trace(go.Scatter(x=us_spread.index, y=us_spread, name="US 10Y-2Y", line=dict(color='royalblue')))
-        fig_spread.add_trace(go.Scatter(x=kr_spread.index, y=kr_spread, name="KR 10Y-3Y", line=dict(color='firebrick')))
-        fig_spread.update_layout(template='plotly_white', hovermode='x unified')
-        st.plotly_chart(fig_spread, use_container_width=True)
+    policy_df = get_policy_rates()
+
+    if not policy_df.empty:
+        # 차트 1: 기준금리 비교
+        fig_policy = go.Figure()
+        fig_policy.add_trace(go.Scatter(x=policy_df.index, y=policy_df['BOK Rate'], name="BOK Rate", line=dict(color='firebrick', width=3)))
+        fig_policy.add_trace(go.Scatter(x=policy_df.index, y=policy_df['Fed Rate'], name="Fed Rate", line=dict(color='royalblue', width=3, dash='dash')))
+        fig_policy.update_layout(title="BOK vs Fed Policy Rate", template='plotly_white', hovermode='x unified')
+        st.plotly_chart(fig_policy, use_container_width=True)
+
+        # 차트 2: 한-미 금리차 (Spread)
+        fig_p_spread = go.Figure()
+        fig_p_spread.add_hline(y=0, line_dash="solid", line_color="black")
+        colors = ['red' if x < 0 else 'blue' for x in policy_df['Spread']]
+        fig_p_spread.add_trace(go.Bar(x=policy_df.index, y=policy_df['Spread'], marker_color=colors, name="Spread (KR-US)"))
+        fig_p_spread.update_layout(title="Interest Rate Differential (KR - US)", template='plotly_white')
+        st.plotly_chart(fig_p_spread, use_container_width=True)

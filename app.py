@@ -2,10 +2,10 @@ import streamlit as st
 import pandas as pd
 from fredapi import Fred
 import plotly.graph_objects as go
-from datetime import datetime
+from plotly.subplots import make_subplots
 
-# 1. 페이지 설정 및 제목
-st.set_page_config(page_title="Financial Dashboard", layout="wide")
+# 1. 페이지 설정
+st.set_page_config(page_title="FRED Financial Dashboard", layout="wide")
 st.title("🏦 Federal Reserve Economic Data Dashboard")
 
 # 2. API 키 보안 로드
@@ -33,67 +33,94 @@ def get_data(series_id):
     except:
         return pd.DataFrame()
 
-# 5. 탭 생성 (이 부분이 화면 상단에 탭을 만듭니다)
-tab1, tab2 = st.tabs(["📊 Repo 흐름 (RPONTTLD)", "💸 금리 분석 (SOFR & Target)"])
+# 5. 탭 생성 (세 번째 탭 추가)
+tab1, tab2, tab3 = st.tabs(["📊 Repo 흐름", "💸 금리 분석", "🌐 유동성 & 달러 인덱스"])
 
-# --- 탭 1: Repo 데이터 영역 ---
+# --- 탭 1: Repo 데이터 ---
 with tab1:
-    st.subheader("Overnight Repurchase Agreements")
-    repo_chart_style = st.radio("차트 스타일", ["선 그래프", "바 그래프"], horizontal=True)
-    
-    with st.spinner('Repo 데이터를 불러오는 중...'):
-        repo_raw = get_data('RPONTTLD')
-        if not repo_raw.empty:
-            repo_df = repo_raw.tail(days_to_show).dropna()
-            
-            # 가시성 조절 (리샘플링)
-            if days_to_show >= 1825:
-                repo_df = repo_df.resample('M').mean()
-                lbl = "(월간 평균)"
-            elif days_to_show >= 365:
-                repo_df = repo_df.resample('W').mean()
-                lbl = "(주간 평균)"
-            else:
-                lbl = "(일간)"
-
-            fig1 = go.Figure()
-            if repo_chart_style == "선 그래프":
-                fig1.add_trace(go.Scatter(x=repo_df.index, y=repo_df['RPONTTLD'], mode='lines', fill='tozeroy', line=dict(color='#1f77b4')))
-            else:
-                fig1.add_trace(go.Bar(x=repo_df.index, y=repo_df['RPONTTLD'], marker_color='royalblue', marker_line_width=0))
-            
-            fig1.update_layout(title=f"RPONTTLD {lbl}", template='plotly_white', hovermode='x unified')
-            st.plotly_chart(fig1, use_container_width=True)
+    st.subheader("Overnight Repurchase Agreements (RPONTTLD)")
+    repo_chart_style = st.radio("Repo 차트 종류", ["선 그래프", "바 그래프"], horizontal=True, key="repo_style")
+    repo_raw = get_data('RPONTTLD')
+    if not repo_raw.empty:
+        repo_df = repo_raw.tail(days_to_show).dropna()
+        fig1 = go.Figure()
+        if repo_chart_style == "선 그래프":
+            fig1.add_trace(go.Scatter(x=repo_df.index, y=repo_df['RPONTTLD'], mode='lines', fill='tozeroy', line=dict(color='#1f77b4')))
         else:
-            st.warning("Repo 데이터를 불러올 수 없습니다.")
+            fig1.add_trace(go.Bar(x=repo_df.index, y=repo_df['RPONTTLD'], marker_color='royalblue', marker_line_width=0))
+        fig1.update_layout(template='plotly_white', hovermode='x unified')
+        st.plotly_chart(fig1, use_container_width=True)
 
-# --- 탭 2: 금리 데이터 영역 ---
+# --- 탭 2: 금리 데이터 ---
 with tab2:
-    st.subheader("SOFR vs Federal Funds Target Range")
+    st.subheader("SOFR vs Fed Target Range")
+    rates_df = pd.concat([get_data('SOFR'), get_data('SOFR99'), get_data('DFEDTARU'), get_data('DFEDTARL')], axis=1).ffill()
+    rates_df = rates_df[rates_df.index >= '2017-01-01'].tail(days_to_show)
+    if not rates_df.empty:
+        fig2 = go.Figure()
+        fig2.add_trace(go.Scatter(x=rates_df.index, y=rates_df['DFEDTARL'], mode='lines', line=dict(width=0), showlegend=False))
+        fig2.add_trace(go.Scatter(x=rates_df.index, y=rates_df['DFEDTARU'], mode='lines', line=dict(width=0), fill='tonexty', fillcolor='rgba(173, 216, 230, 0.3)', name='Target Range'))
+        fig2.add_trace(go.Scatter(x=rates_df.index, y=rates_df['SOFR'], mode='lines', line=dict(color='darkblue', width=2), name='SOFR'))
+        fig2.add_trace(go.Scatter(x=rates_df.index, y=rates_df['SOFR99'], mode='lines', line=dict(color='orange', width=1, dash='dot'), name='SOFR 99th'))
+        fig2.update_layout(template='plotly_white', hovermode='x unified')
+        st.plotly_chart(fig2, use_container_width=True)
+
+# --- 탭 3: 유동성 & 달러 인덱스 (신규) ---
+with tab3:
+    st.subheader("Overnight Bank Funding Volume & U.S. Dollar Indices")
+    st.caption("2015년 이후 데이터 (달러 인덱스는 오른쪽 축 표시)")
     
-    with st.spinner('금리 데이터를 분석 중...'):
+    # OBFR 표시 여부 버튼
+    show_obfr = st.checkbox("Show Overnight Bank Funding Volume (OBFRVOL)", value=True)
+
+    with st.spinner('데이터를 불러오는 중...'):
         # 데이터 수집
-        s_sofr = get_data('SOFR')
-        s_sofr99 = get_data('SOFR99')
-        s_upper = get_data('DFEDTARU')
-        s_lower = get_data('DFEDTARL')
+        d_obfr = get_data('OBFRVOL')
+        d_broad = get_data('DTWEXBGS')
+        d_afe = get_data('DTWEXAFEGS')
+        d_eme = get_data('DTWEXEMEGS')
 
-        # 통합 및 필터링 (2017년 이후)
-        rates_df = pd.concat([s_sofr, s_sofr99, s_upper, s_lower], axis=1).ffill()
-        rates_df = rates_df[rates_df.index >= '2017-01-01'].tail(days_to_show)
+        # 데이터 통합 및 2015년 이후 필터링
+        df3 = pd.concat([d_obfr, d_broad, d_afe, d_eme], axis=1).ffill()
+        df3 = df3[df3.index >= '2015-01-01'].tail(days_to_show)
 
-        if not rates_df.empty:
-            fig2 = go.Figure()
-            # 1. Target Range 음영 (Lower -> Upper)
-            fig2.add_trace(go.Scatter(x=rates_df.index, y=rates_df['DFEDTARL'], mode='lines', line=dict(width=0), showlegend=False))
-            fig2.add_trace(go.Scatter(x=rates_df.index, y=rates_df['DFEDTARU'], mode='lines', line=dict(width=0), 
-                                     fill='tonexty', fillcolor='rgba(173, 216, 230, 0.3)', name='Target Range'))
-            
-            # 2. SOFR 라인들
-            fig2.add_trace(go.Scatter(x=rates_df.index, y=rates_df['SOFR'], mode='lines', line=dict(color='darkblue', width=2), name='SOFR'))
-            fig2.add_trace(go.Scatter(x=rates_df.index, y=rates_df['SOFR99'], mode='lines', line=dict(color='orange', width=1, dash='dot'), name='SOFR 99th'))
+    if not df3.empty:
+        # 이중 축 차트 생성
+        fig3 = make_subplots(specs=[[{"secondary_y": True}]])
 
-            fig2.update_layout(title="SOFR & Fed Target Range Trend", template='plotly_white', hovermode='x unified')
-            st.plotly_chart(fig2, use_container_width=True)
-        else:
-            st.warning("금리 데이터를 불러올 수 없습니다. API 키나 지표 ID를 확인해주세요.")
+        # 1. OBFR 거래량 (왼쪽 축) - 버튼 선택 시에만 표시
+        if show_obfr:
+            fig3.add_trace(
+                go.Scatter(x=df3.index, y=df3['OBFRVOL'], name="OBFR Volume (Left)", 
+                           line=dict(color='rgba(100, 100, 100, 0.5)', width=1.5)),
+                secondary_y=False,
+            )
+
+        # 2. 달러 인덱스 시리즈 (오른쪽 축)
+        fig3.add_trace(
+            go.Scatter(x=df3.index, y=df3['DTWEXBGS'], name="Broad Dollar (Right)", line=dict(color='royalblue', width=2)),
+            secondary_y=True,
+        )
+        fig3.add_trace(
+            go.Scatter(x=df3.index, y=df3['DTWEXAFEGS'], name="AFE Dollar (Right)", line=dict(color='green', width=1.5)),
+            secondary_y=True,
+        )
+        fig3.add_trace(
+            go.Scatter(x=df3.index, y=df3['DTWEXEMEGS'], name="EME Dollar (Right)", line=dict(color='firebrick', width=1.5)),
+            secondary_y=True,
+        )
+
+        fig3.update_layout(
+            title=f"Volume vs Dollar Index Trend ({selected_label})",
+            template='plotly_white',
+            hovermode='x unified',
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        )
+
+        fig3.update_yaxes(title_text="Volume (Millions of $)", secondary_y=False)
+        fig3.update_yaxes(title_text="Index Value", secondary_y=True)
+
+        st.plotly_chart(fig3, use_container_width=True)
+        st.dataframe(df3.tail(10).iloc[::-1])
+    else:
+        st.warning("데이터를 불러올 수 없습니다.")

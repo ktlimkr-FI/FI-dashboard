@@ -137,41 +137,78 @@ with tab4:
     st.plotly_chart(fig4, use_container_width=True)
 
 
-# --- 탭 5: Repo Fails (OFR API) ---
+# --- 탭 5: Repo Fails (OFR API + 계절성 분석) ---
 with tab5:
-    st.subheader("Primary Dealer Repo Fails to Deliver")
-    st.caption("시장 결제 불이행 데이터 (OFR 데이터 소스 활용)")
+    st.subheader("Primary Dealer Repo Fails Analysis")
     
-    with st.spinner('OFR 데이터를 불러오는 중...'):
-        fails_df = get_ofr_fails_data().tail(days_to_show).ffill()
+    with st.spinner('OFR 데이터를 분석 중...'):
+        # 10년치 전체 데이터를 가져와서 계절성 분석에 활용
+        fails_all = get_ofr_fails_data().ffill()
+        fails_display = fails_all.tail(days_to_show)
 
-    if not fails_df.empty:
-        # 1. 누적 영역 차트 (Stacked Area Chart)
-        st.write("### 항목별 누적 결제 불이행 건수")
-        fig5_stacked = go.Figure()
-        for col in fails_df.columns:
-            fig5_stacked.add_trace(go.Scatter(
-                x=fails_df.index, y=fails_df[col],
-                mode='lines', stackgroup='one', # 'one'으로 설정하면 누적 차트가 됩니다.
-                name=col
-            ))
-        fig5_stacked.update_layout(template='plotly_white', hovermode='x unified', yaxis_title="Millions of $")
-        st.plotly_chart(fig5_stacked, use_container_width=True)
+    if not fails_all.empty:
+        # --- 기존 차트 (누적 및 국채 단독) ---
+        col1, col2 = st.columns(2)
+        with col1:
+            st.write("### 항목별 누적 Fails (선택 기간)")
+            fig_stacked = go.Figure()
+            for col in fails_display.columns:
+                fig_stacked.add_trace(go.Scatter(x=fails_display.index, y=fails_display[col], mode='lines', stackgroup='one', name=col))
+            fig_stacked.update_layout(template='plotly_white', height=400)
+            st.plotly_chart(fig_stacked, use_container_width=True)
+            
+        with col2:
+            st.write("### UST Fails (선택 기간)")
+            fig_ust = go.Figure()
+            fig_ust.add_trace(go.Scatter(x=fails_display.index, y=fails_display['UST fails to deliver'], fill='tozeroy', line=dict(color='firebrick')))
+            fig_ust.update_layout(template='plotly_white', height=400)
+            st.plotly_chart(fig_ust, use_container_width=True)
 
-        # 2. Treasury Fails 단독 선 차트
         st.divider()
-        st.write("### Treasury Repo Fails (국채 단독)")
-        fig5_ust = go.Figure()
-        fig5_ust.add_trace(go.Scatter(
-            x=fails_df.index, y=fails_df['UST fails to deliver'],
-            mode='lines', line=dict(color='firebrick', width=2),
-            fill='tozeroy', name='UST Fails'
-        ))
-        fig5_ust.update_layout(template='plotly_white', hovermode='x unified', yaxis_title="Millions of $")
-        st.plotly_chart(fig5_ust, use_container_width=True)
+
+        # --- [신규] 계절성 분석 섹션 ---
+        st.write("## 🗓️ Repo Fails 계절성 분석 (UST Fails 기준)")
+        st.info("추세를 제거하고 10년치 데이터를 주간 단위로 분석하여 매년 반복되는 패턴을 보여줍니다.")
+
+        # 1. 추세 제거 (Detrending)
+        # 52주(1년) 이동평균을 구하여 원본에서 뺌으로써 장기 추세 제거
+        ust_fails = fails_all[['UST fails to deliver']].copy()
+        ust_fails['Trend'] = ust_fails['UST fails to deliver'].rolling(window=52, center=True).mean()
+        ust_fails['Detrended'] = ust_fails['UST fails to deliver'] - ust_fails['Trend']
+
+        # 2. 주간 평균 계절성 계산 (10년치 활용)
+        # 날짜에서 주차(Week Number) 추출
+        ust_fails['Week'] = ust_fails.index.isocalendar().week
+        seasonal_pattern = ust_fails.groupby('Week')['Detrended'].mean().reset_index()
+
+        c1, c2 = st.columns(2)
         
-        st.dataframe(fails_df.tail(10).iloc[::-1])
+        with c1:
+            st.write("### 1. 추세 제거 데이터 (Detrended)")
+            st.caption("장기 추세를 제거하여 평균 대비 과도하게 발생한 시점을 보여줍니다.")
+            fig_detrended = go.Figure()
+            fig_detrended.add_trace(go.Scatter(x=ust_fails.index, y=ust_fails['Detrended'], line=dict(color='purple', width=1)))
+            fig_detrended.add_hline(y=0, line_dash="dash", line_color="grey")
+            fig_detrended.update_layout(template='plotly_white', height=400)
+            st.plotly_chart(fig_detrended, use_container_width=True)
+
+        with c2:
+            st.write("### 2. 10년 주간 평균 계절성")
+            st.caption("1월(1주)부터 12월(52주)까지의 평균적인 Fails 발생 패턴")
+            fig_seasonal = go.Figure()
+            fig_seasonal.add_trace(go.Bar(
+                x=seasonal_pattern['Week'], 
+                y=seasonal_pattern['Detrended'],
+                marker_color='orange'
+            ))
+            fig_seasonal.update_layout(
+                template='plotly_white', 
+                height=400,
+                xaxis_title="주차 (Week Number)",
+                yaxis_title="평균 대비 편차"
+            )
+            st.plotly_chart(fig_seasonal, use_container_width=True)
+
+        st.success("💡 **분석 결과:** 특정 주차(예: 분말, 연말)에 막대가 높게 나타난다면, 해당 시기에 정기적으로 국채 결제 불이행이 증가하는 경향이 있음을 의미합니다.")
     else:
-        st.error("OFR API에서 데이터를 가져오지 못했습니다.")
-
-
+        st.error("데이터를 불러올 수 없습니다.")

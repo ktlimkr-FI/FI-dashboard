@@ -112,3 +112,4 @@ with tab4:
         fig4.add_trace(go.Scatter(x=target_df.index, y=target_df[s], name=s))
     fig4.update_layout(template='plotly_white', hovermode='x unified', yaxis_title=view_mode)
     st.plotly_chart(fig4, use_container_width=True)
+    

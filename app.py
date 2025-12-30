@@ -284,9 +284,11 @@ with tab5:
             st.plotly_chart(fig_ust, use_container_width=True)
 
         st.divider()
+# --- [수정] 계절성 분석 섹션 ---
         st.write("## 🗓️ Repo Fails 계절성 분석 (UST Fails 기준)")
-        st.info("추세를 제거하고 10년치 데이터를 주간 단위로 분석하여 매년 반복되는 패턴을 보여줍니다.")
+        st.info("9월~12월(연말 구간)은 회색 음영으로 표시됩니다. 이 시기의 패턴 변화를 주목하세요.")
 
+        # 1. 추세 제거 (Detrending)
         ust_fails = fails_all[['UST fails to deliver']].copy()
         ust_fails['Trend'] = ust_fails['UST fails to deliver'].rolling(window=52, center=True).mean()
         ust_fails['Detrended'] = ust_fails['UST fails to deliver'] - ust_fails['Trend']
@@ -294,19 +296,51 @@ with tab5:
         seasonal_pattern = ust_fails.groupby('Week')['Detrended'].mean().reset_index()
 
         c1, c2 = st.columns(2)
+        
         with c1:
             st.write("### 1. 추세 제거 데이터 (Detrended)")
             fig_detrended = go.Figure()
-            fig_detrended.add_trace(go.Scatter(x=ust_fails.index, y=ust_fails['Detrended'], line=dict(color='purple', width=1)))
+            
+            # 매년 9월 1일부터 12월 31일까지 음영 추가
+            years = ust_fails.index.year.unique()
+            for year in years:
+                fig_detrended.add_vrect(
+                    x0=f"{year}-09-01", x1=f"{year}-12-31",
+                    fillcolor="rgba(128, 128, 128, 0.2)", opacity=0.3,
+                    layer="below", line_width=0,
+                )
+            
+            fig_detrended.add_trace(go.Scatter(x=ust_fails.index, y=ust_fails['Detrended'], line=dict(color='purple', width=1), name="Detrended"))
             fig_detrended.add_hline(y=0, line_dash="dash", line_color="grey")
-            fig_detrended.update_layout(template='plotly_white', height=400)
+            fig_detrended.update_layout(template='plotly_white', height=400, showlegend=False)
             st.plotly_chart(fig_detrended, use_container_width=True)
 
         with c2:
             st.write("### 2. 10년 주간 평균 계절성")
             fig_seasonal = go.Figure()
-            fig_seasonal.add_trace(go.Bar(x=seasonal_pattern['Week'], y=seasonal_pattern['Detrended'], marker_color='orange'))
-            fig_seasonal.update_layout(template='plotly_white', height=400, xaxis_title="주차 (Week)", yaxis_title="편차")
+            
+            # 주간 차트 음영: 보통 36주차(9월 초) ~ 52주차(12월 말)
+            fig_seasonal.add_vrect(
+                x0=35.5, x1=52.5,
+                fillcolor="rgba(128, 128, 128, 0.2)", opacity=0.3,
+                layer="below", line_width=0,
+                annotation_text="Sep-Dec Area", annotation_position="top left"
+            )
+            
+            fig_seasonal.add_trace(go.Bar(
+                x=seasonal_pattern['Week'], 
+                y=seasonal_pattern['Detrended'], 
+                marker_color='orange',
+                name="Avg Deviation"
+            ))
+            
+            fig_seasonal.update_layout(
+                template='plotly_white', 
+                height=400, 
+                xaxis_title="주차 (Week)", 
+                yaxis_title="편차",
+                showlegend=False
+            )
             st.plotly_chart(fig_seasonal, use_container_width=True)
-    else:
-        st.error("데이터를 불러올 수 없습니다.")
+
+        st.success("💡 **분석 가이드:** 음영 구역(9월-12월) 내에서 막대가 솟아오르는 패턴이 보인다면, 연말 결제 수요로 인한 정기적인 레포 시장 병목 현상이 존재함을 시사합니다.")

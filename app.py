@@ -516,3 +516,76 @@ with tab6:
         with st.expander("📄 연준 공식 원본 데이터 테이블 보기"):
             st.dataframe(clean_df, use_container_width=True)
 
+import FinanceDataReader as fdr
+
+# --- 탭 7: 금리 커브 (Yield Curve - US & KR) ---
+with tab7:
+    st.subheader("📈 Treasury Yield Curve Analysis (US & KR)")
+    st.caption("장단기 금리차와 수익률 곡선을 통해 경기 전망을 분석합니다.")
+
+    # 데이터 로드 함수 (미국 국채 - FRED)
+    @st.cache_data(ttl=3600)
+    def get_yield_curve_us():
+        # 3개월, 2년, 5년, 10년, 30년물
+        tickers = {'3M': 'DGS3MO', '2Y': 'DGS2', '5Y': 'DGS5', '10Y': 'DGS10', '30Y': 'DGS30'}
+        df = pd.concat([get_fred_data(v) for v in tickers.values()], axis=1).ffill()
+        df.columns = tickers.keys()
+        return df
+
+    # 데이터 로드 함수 (한국 국채 - FinanceDataReader)
+    @st.cache_data(ttl=3600)
+    def get_yield_curve_kr():
+        # 한국 3년물(KR3YT), 10년물(KR10YT)
+        kr3y = fdr.DataReader('KR3YT=RR') # 한국 3년 만기 국채 수익률
+        kr10y = fdr.DataReader('KR10YT=RR') # 한국 10년 만기 국채 수익률
+        df = pd.concat([kr3y['Close'], kr10y['Close']], axis=1).ffill()
+        df.columns = ['KR 3Y', 'KR 10Y']
+        return df
+
+    us_yields = get_yield_curve_us()
+    kr_yields = get_yield_curve_kr()
+
+    # --- 섹션 1: 현재 수익률 곡선 (Shape of the Curve) ---
+    st.write("### 1. Current Yield Curve Shape")
+    col_u, col_k = st.columns(2)
+
+    with col_u:
+        # 미국 커브 시각화
+        latest_us = us_yields.iloc[-1]
+        fig_us_curve = go.Figure()
+        fig_us_curve.add_trace(go.Scatter(x=latest_us.index, y=latest_us.values, mode='lines+markers', 
+                                         line=dict(color='royalblue', width=3), name='US Treasury'))
+        fig_us_curve.update_layout(title=f"US Yield Curve ({latest_us.name.date()})", 
+                                   template='plotly_white', yaxis_title="Yield (%)")
+        st.plotly_chart(fig_us_curve, use_container_width=True)
+
+    with col_k:
+        # 한국 커브 시각화
+        latest_kr = kr_yields.iloc[-1]
+        fig_kr_curve = go.Figure()
+        fig_kr_curve.add_trace(go.Scatter(x=latest_kr.index, y=latest_kr.values, mode='lines+markers', 
+                                         line=dict(color='firebrick', width=3), name='KR Treasury'))
+        fig_kr_curve.update_layout(title=f"KR Yield Curve ({latest_kr.name.date()})", 
+                                   template='plotly_white', yaxis_title="Yield (%)")
+        st.plotly_chart(fig_kr_curve, use_container_width=True)
+
+    st.divider()
+
+    # --- 섹션 2: 장단기 금리차 (Spread) 추이 ---
+    st.write("### 2. Yield Spread Trend (Recession Indicator)")
+    
+    us_spread = (us_yields['10Y'] - us_yields['2Y']).tail(days_to_show)
+    kr_spread = (kr_yields['KR 10Y'] - kr_yields['KR 3Y']).tail(days_to_show)
+
+    fig_spread = go.Figure()
+    # 0선 표시 (역전 여부 확인용)
+    fig_spread.add_hline(y=0, line_dash="dash", line_color="black", line_width=2)
+    
+    fig_spread.add_trace(go.Scatter(x=us_spread.index, y=us_spread, name="US 10Y-2Y", line=dict(color='royalblue')))
+    fig_spread.add_trace(go.Scatter(x=kr_spread.index, y=kr_spread, name="KR 10Y-3Y", line=dict(color='firebrick')))
+    
+    fig_spread.update_layout(title="US & KR Yield Spread (10Y - Short Term)", 
+                             template='plotly_white', hovermode='x unified', yaxis_title="Spread (%)")
+    st.plotly_chart(fig_spread, use_container_width=True)
+
+    st.success("💡 **분석 팁:** 스프레드가 0 아래로 내려가는 '장단기 금리 역전' 현상은 역사적으로 강력한 경기 침체(Recession)의 전조 현상으로 해석됩니다.")

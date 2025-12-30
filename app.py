@@ -132,6 +132,7 @@ with tab1:
     fig_season.update_yaxes(title_text="Interest Rate (%)", secondary_y=False)
     fig_season.update_yaxes(title_text="Spread (%)", secondary_y=True)
     st.plotly_chart(fig_season, use_container_width=True)
+
 # --- 탭 2: 금리 분석 (Target Range 음영 포함) ---
 with tab2:
     st.subheader("SOFR vs Fed Target Range")

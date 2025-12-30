@@ -94,48 +94,175 @@ with tab1:
 
 # --- 탭 2: 금리 ---
 with tab2:
-    st.subheader("SOFR vs Fed Target Range")
-    r_df = pd.concat([get_fred_data('SOFR'), get_fred_data('SOFR99'), get_fred_data('DFEDTARU'), get_fred_data('DFEDTARL')], axis=1).ffill()
-    r_df = r_df[r_df.index >= '2017-01-01'].tail(days_to_show)
+    st.subheader("SOFR vs Federal Funds Target Range")
+    st.caption("2017년 이후 데이터 표시 (Target Range는 음영으로 표시)")
+
+    # 필요한 지표들 가져오기
+    with st.spinner('금리 데이터를 불러오는 중...'):
+        sofr = get_fred_data('SOFR')
+        sofr99 = get_fred_data('SOFR99')
+        upper = get_fred_data('DFEDTARU')
+        lower = get_fred_data('DFEDTARL')
+
+        # 데이터 병합
+        rates_df = pd.concat([sofr, sofr99, upper, lower], axis=1)
+        # 2017년 이후 데이터만 필터링 및 선택 기간 적용
+        rates_df = rates_df[rates_df.index >= '2017-01-01'].tail(days_to_show).ffill()
+
     fig2 = go.Figure()
-    fig2.add_trace(go.Scatter(x=r_df.index, y=r_df['DFEDTARL'], mode='lines', line=dict(width=0), showlegend=False))
-    fig2.add_trace(go.Scatter(x=r_df.index, y=r_df['DFEDTARU'], mode='lines', line=dict(width=0), fill='tonexty', fillcolor='rgba(173, 216, 230, 0.3)', name='Target Range'))
-    fig2.add_trace(go.Scatter(x=r_df.index, y=r_df['SOFR'], name='SOFR', line=dict(color='darkblue', width=2)))
-    fig2.update_layout(template='plotly_white', hovermode='x unified')
+
+    # 1. Target Range 음영 처리 (Lower를 먼저 그리고 Upper를 Lower까지 채움)
+    fig2.add_trace(go.Scatter(
+        x=rates_df.index, y=rates_df['DFEDTARL'],
+        mode='lines', line=dict(width=0),
+        showlegend=False, name='Lower Limit'
+    ))
+    fig2.add_trace(go.Scatter(
+        x=rates_df.index, y=rates_df['DFEDTARU'],
+        mode='lines', line=dict(width=0),
+        fill='tonexty', fillcolor='rgba(173, 216, 230, 0.4)', # 연한 파란색 음영
+        name='Target Range (Upper/Lower)'
+    ))
+
+    # 2. SOFR 및 SOFR99 라인 추가
+    fig2.add_trace(go.Scatter(
+        x=rates_df.index, y=rates_df['SOFR'],
+        mode='lines', line=dict(color='darkblue', width=2),
+        name='SOFR'
+    ))
+    fig2.add_trace(go.Scatter(
+        x=rates_df.index, y=rates_df['SOFR99'],
+        mode='lines', line=dict(color='orange', width=1, dash='dot'),
+        name='SOFR 99th Percentile'
+    ))
+
+    fig2.update_layout(
+        title=f"Interest Rates Trend ({selected_label})",
+        xaxis_title="Date",
+        yaxis_title="Percent",
+        template='plotly_white',
+        hovermode='x unified',
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    )
+
     st.plotly_chart(fig2, use_container_width=True)
+    st.table(rates_df.tail(10).iloc[::-1])
 
-# --- 탭 3: 유동성&달러 ---
+# --- 탭 3: 유동성 & 달러 인덱스 (신규) ---
 with tab3:
-    st.subheader("OBFR Volume & Dollar Indices")
-    show_obfr = st.checkbox("Show OBFR Volume", value=True)
-    d3 = pd.concat([get_fred_data('OBFRVOL'), get_fred_data('DTWEXBGS'), get_fred_data('DTWEXAFEGS'), get_fred_data('DTWEXEMEGS')], axis=1).ffill()
-    d3 = d3[d3.index >= '2015-01-01'].tail(days_to_show)
-    fig3 = make_subplots(specs=[[{"secondary_y": True}]])
-    if show_obfr:
-        fig3.add_trace(go.Scatter(x=d3.index, y=d3['OBFRVOL'], name="OBFR Vol", line=dict(color='lightgrey')), secondary_y=False)
-    fig3.add_trace(go.Scatter(x=d3.index, y=d3['DTWEXBGS'], name="Broad Index"), secondary_y=True)
-    fig3.update_layout(template='plotly_white', hovermode='x unified')
-    st.plotly_chart(fig3, use_container_width=True)
+    st.subheader("Overnight Bank Funding Volume & U.S. Dollar Indices")
+    st.caption("2015년 이후 데이터 (달러 인덱스는 오른쪽 축 표시)")
+    
+    # OBFR 표시 여부 버튼
+    show_obfr = st.checkbox("Show Overnight Bank Funding Volume (OBFRVOL)", value=True)
 
-# --- 탭 4: 환율(Yahoo) ---
+    with st.spinner('데이터를 불러오는 중...'):
+        # 데이터 수집
+        d_obfr = get_data('OBFRVOL')
+        d_broad = get_data('DTWEXBGS')
+        d_afe = get_data('DTWEXAFEGS')
+        d_eme = get_data('DTWEXEMEGS')
+
+        # 데이터 통합 및 2015년 이후 필터링
+        df3 = pd.concat([d_obfr, d_broad, d_afe, d_eme], axis=1).ffill()
+        df3 = df3[df3.index >= '2015-01-01'].tail(days_to_show)
+
+    if not df3.empty:
+        # 이중 축 차트 생성
+        fig3 = make_subplots(specs=[[{"secondary_y": True}]])
+
+        # 1. OBFR 거래량 (왼쪽 축) - 버튼 선택 시에만 표시
+        if show_obfr:
+            fig3.add_trace(
+                go.Scatter(x=df3.index, y=df3['OBFRVOL'], name="OBFR Volume (Left)", 
+                           line=dict(color='rgba(100, 100, 100, 0.5)', width=1.5)),
+                secondary_y=False,
+            )
+
+        # 2. 달러 인덱스 시리즈 (오른쪽 축)
+        fig3.add_trace(
+            go.Scatter(x=df3.index, y=df3['DTWEXBGS'], name="Broad Dollar (Right)", line=dict(color='royalblue', width=2)),
+            secondary_y=True,
+        )
+        fig3.add_trace(
+            go.Scatter(x=df3.index, y=df3['DTWEXAFEGS'], name="AFE Dollar (Right)", line=dict(color='green', width=1.5)),
+            secondary_y=True,
+        )
+        fig3.add_trace(
+            go.Scatter(x=df3.index, y=df3['DTWEXEMEGS'], name="EME Dollar (Right)", line=dict(color='firebrick', width=1.5)),
+            secondary_y=True,
+        )
+
+        fig3.update_layout(
+            title=f"Volume vs Dollar Index Trend ({selected_label})",
+            template='plotly_white',
+            hovermode='x unified',
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        )
+
+        fig3.update_yaxes(title_text="Volume (Millions of $)", secondary_y=False)
+        fig3.update_yaxes(title_text="Index Value", secondary_y=True)
+
+        st.plotly_chart(fig3, use_container_width=True)
+        st.dataframe(df3.tail(10).iloc[::-1])
+    else:
+        st.warning("데이터를 불러올 수 없습니다.")
+
+# --- 탭 4: 환율 및 달러 인덱스 (Yahoo Finance) ---
 with tab4:
-    st.subheader("Yahoo Finance: Global Currencies (Normalization)")
-    yf_raw = get_yfinance_data().tail(days_to_show).ffill().bfill()
+    st.subheader("Global Currency & Dollar Index (10Y Daily)")
     
-    view_mode = st.radio("보기 방식", ["상대 수익률 (100 기준)", "절대 가격"], horizontal=True)
-    selected_symbols = st.multiselect("지표 선택", options=list(yf_raw.columns), default=list(yf_raw.columns))
-    
-    target_df = yf_raw.copy()
-    if view_mode == "상대 수익률 (100 기준)":
-        for col in target_df.columns:
-            target_df[col] = (target_df[col] / target_df[col].iloc[0]) * 100
+    with st.spinner('Yahoo Finance 데이터를 불러오는 중...'):
+        yf_data = get_yfinance_data()
+        # 선택한 기간만큼 필터링
+        yf_display = yf_data.tail(days_to_show)
 
-    fig4 = go.Figure()
-    for s in selected_symbols:
-        fig4.add_trace(go.Scatter(x=target_df.index, y=target_df[s], name=s))
-    fig4.update_layout(template='plotly_white', hovermode='x unified', yaxis_title=view_mode)
-    st.plotly_chart(fig4, use_container_width=True)
+    if not yf_display.empty:
+        # 1. 통합 차트 섹션
+        st.write("### 통합 비교 차트")
+        # 제거/추가 옵션 버튼 (Multiselect 활용)
+        selected_symbols = st.multiselect(
+            "차트에 표시할 지표를 선택하세요 (제거하려면 X 클릭)",
+            options=list(yf_display.columns),
+            default=list(yf_display.columns)
+        )
 
+        fig4_combined = go.Figure()
+        for symbol in selected_symbols:
+            fig4_combined.add_trace(go.Scatter(
+                x=yf_display.index, y=yf_display[symbol],
+                mode='lines', name=symbol
+            ))
+        
+        fig4_combined.update_layout(
+            title="통합 환율 추이",
+            template='plotly_white',
+            hovermode='x unified',
+            yaxis_title="Value"
+        )
+        st.plotly_chart(fig4_combined, use_container_width=True)
+
+        # 2. 개별 차트 섹션
+        st.divider()
+        st.write("### 개별 상세 차트")
+        # 2개씩 한 줄에 배치
+        cols = st.columns(2)
+        for i, symbol in enumerate(yf_display.columns):
+            with cols[i % 2]:
+                fig_ind = go.Figure()
+                fig_ind.add_trace(go.Scatter(
+                    x=yf_display.index, y=yf_display[symbol],
+                    mode='lines', name=symbol, line=dict(width=2)
+                ))
+                fig_ind.update_layout(
+                    title=f"{symbol} 상세",
+                    template='plotly_white',
+                    height=300,
+                    margin=dict(l=0, r=0, t=30, b=0)
+                )
+                st.plotly_chart(fig_ind, use_container_width=True)
+    else:
+        st.error("데이터를 가져오는 데 실패했습니다.")
 
 # --- 탭 5: Repo Fails (OFR API + 계절성 분석) ---
 with tab5:

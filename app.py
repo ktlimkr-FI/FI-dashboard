@@ -1,12 +1,13 @@
 import streamlit as st
 import pandas as pd
+import yfinance as yf
 from fredapi import Fred
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 # 1. 페이지 설정
-st.set_page_config(page_title="FRED Financial Dashboard", layout="wide")
-st.title("🏦 Federal Reserve Economic Data Dashboard")
+st.set_page_config(page_title="Global Financial Dashboard", layout="wide")
+st.title("🏦 Comprehensive Financial Data Dashboard")
 
 # 2. API 키 보안 로드
 try:
@@ -25,16 +26,32 @@ days_to_show = period_options[selected_label]
 
 # 4. 데이터 로드 함수 (캐싱 적용)
 @st.cache_data(ttl=3600)
-def get_data(series_id):
+def get_fred_data(series_id):
     try:
         data = fred.get_series(series_id)
-        df = pd.DataFrame(data, columns=[series_id])
-        return df
-    except:
-        return pd.DataFrame()
+        return pd.DataFrame(data, columns=[series_id])
+    except: return pd.DataFrame()
+
+@st.cache_data(ttl=3600)
+def get_yfinance_data():
+    # 요청하신 심볼 매핑 (DXY는 DX-Y.NYB 사용)
+    tickers = {
+        "DXY Index": "DX-Y.NYB",
+        "USD/KRW": "USDKRW=X",
+        "USD/CNY": "USDCNY=X",
+        "USD/MXN": "USDMXN=X",
+        "USD/JPY": "USDJPY=X",
+        "USD/EUR": "USDEUR=X"
+    }
+    # 최근 10년치 일간 데이터 가져오기
+    data = yf.download(list(tickers.values()), period="10y", interval="1d")['Close']
+    # 컬럼명을 보기 좋게 변경
+    inv_tickers = {v: k for k, v in tickers.items()}
+    data.rename(columns=inv_tickers, inplace=True)
+    return data
 
 # 5. 탭 생성 (세 번째 탭 추가)
-tab1, tab2, tab3 = st.tabs(["📊 Repo 흐름", "💸 금리 분석", "🌐 유동성 & 달러 인덱스"])
+tab1, tab2, tab3, tab4 = st.tabs(["📊 Repo", "💸 금리", "🌐 유동성&달러", "💹 환율(Yahoo)"])
 
 # --- 탭 1: Repo 데이터 ---
 with tab1:
@@ -124,3 +141,61 @@ with tab3:
         st.dataframe(df3.tail(10).iloc[::-1])
     else:
         st.warning("데이터를 불러올 수 없습니다.")
+
+# --- 탭 4: 환율 및 달러 인덱스 (Yahoo Finance) ---
+with tab4:
+    st.subheader("Global Currency & Dollar Index (10Y Daily)")
+    
+    with st.spinner('Yahoo Finance 데이터를 불러오는 중...'):
+        yf_data = get_yfinance_data()
+        # 선택한 기간만큼 필터링
+        yf_display = yf_data.tail(days_to_show)
+
+    if not yf_display.empty:
+        # 1. 통합 차트 섹션
+        st.write("### 통합 비교 차트")
+        # 제거/추가 옵션 버튼 (Multiselect 활용)
+        selected_symbols = st.multiselect(
+            "차트에 표시할 지표를 선택하세요 (제거하려면 X 클릭)",
+            options=list(yf_display.columns),
+            default=list(yf_display.columns)
+        )
+
+        fig4_combined = go.Figure()
+        for symbol in selected_symbols:
+            fig4_combined.add_trace(go.Scatter(
+                x=yf_display.index, y=yf_display[symbol],
+                mode='lines', name=symbol
+            ))
+        
+        fig4_combined.update_layout(
+            title="통합 환율 추이",
+            template='plotly_white',
+            hovermode='x unified',
+            yaxis_title="Value"
+        )
+        st.plotly_chart(fig4_combined, use_container_width=True)
+
+        # 2. 개별 차트 섹션
+        st.divider()
+        st.write("### 개별 상세 차트")
+        # 2개씩 한 줄에 배치
+        cols = st.columns(2)
+        for i, symbol in enumerate(yf_display.columns):
+            with cols[i % 2]:
+                fig_ind = go.Figure()
+                fig_ind.add_trace(go.Scatter(
+                    x=yf_display.index, y=yf_display[symbol],
+                    mode='lines', name=symbol, line=dict(width=2)
+                ))
+                fig_ind.update_layout(
+                    title=f"{symbol} 상세",
+                    template='plotly_white',
+                    height=300,
+                    margin=dict(l=0, r=0, t=30, b=0)
+                )
+                st.plotly_chart(fig_ind, use_container_width=True)
+    else:
+        st.error("데이터를 가져오는 데 실패했습니다.")
+
+

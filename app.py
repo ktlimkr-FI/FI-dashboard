@@ -126,25 +126,86 @@ with tab2:
         fig2.update_layout(title="SOFR & Target Range Trend", template='plotly_white', hovermode='x unified')
         st.plotly_chart(fig2, use_container_width=True)
 
-# --- 탭 3: 유동성&달러 (이중 축 포함) ---
+# --- 탭 3: 유동성&달러 (이중 축 및 개별 선택 옵션 포함) ---
 with tab3:
-    st.subheader("OBFR Volume & Dollar Indices")
-    show_obfr = st.checkbox("Show OBFR Volume", value=True)
-    d3 = pd.concat([
-        get_fred_data('OBFRVOL'), get_fred_data('DTWEXBGS'), 
-        get_fred_data('DTWEXAFEGS'), get_fred_data('DTWEXEMEGS')
+    st.subheader("OBFR Volume & U.S. Dollar Indices")
+    st.caption("거래량(Volume)은 왼쪽 축, 달러 인덱스들은 오른쪽 축을 기준으로 표시됩니다.")
+
+    # 지표 선택을 위한 체크박스들을 한 줄에 배치
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        show_obfr = st.checkbox("OBFR Volume", value=True)
+    with c2:
+        show_broad = st.checkbox("Broad Index", value=True)
+    with c3:
+        show_afe = st.checkbox("AFE Index (선진국)", value=False)
+    with c4:
+        show_eme = st.checkbox("EME Index (신흥국)", value=False)
+
+    # 데이터 로드 및 통합
+    d3_raw = pd.concat([
+        get_fred_data('OBFRVOL'), 
+        get_fred_data('DTWEXBGS'), 
+        get_fred_data('DTWEXAFEGS'), 
+        get_fred_data('DTWEXEMEGS')
     ], axis=1).ffill()
-    d3 = d3[d3.index >= '2015-01-01'].tail(days_to_show)
+    
+    # 2015년 이후 필터링 및 선택 기간 적용
+    d3 = d3_raw[d3_raw.index >= '2015-01-01'].tail(days_to_show)
     
     if not d3.empty:
+        # 이중 축 차트 생성
         fig3 = make_subplots(specs=[[{"secondary_y": True}]])
+        
+        # 1. OBFR 거래량 (왼쪽 축 - 볼륨)
         if show_obfr:
-            fig3.add_trace(go.Scatter(x=d3.index, y=d3['OBFRVOL'], name="OBFR Vol (Left)", line=dict(color='lightgrey')), secondary_y=False)
-        fig3.add_trace(go.Scatter(x=d3.index, y=d3['DTWEXBGS'], name="Broad Index (Right)", line=dict(color='royalblue', width=2)), secondary_y=True)
-        fig3.update_layout(template='plotly_white', hovermode='x unified')
-        fig3.update_yaxes(title_text="Volume ($M)", secondary_y=False)
-        fig3.update_yaxes(title_text="Index Value", secondary_y=True)
+            fig3.add_trace(
+                go.Scatter(
+                    x=d3.index, y=d3['OBFRVOL'], 
+                    name="OBFR Vol (Left)", 
+                    line=dict(color='rgba(150, 150, 150, 0.5)', width=1.5),
+                    fill='tozeroy' # 거래량 느낌을 주기 위해 바닥 채우기
+                ),
+                secondary_y=False,
+            )
+        
+        # 2. 달러 인덱스 시리즈 (오른쪽 축 - 지수)
+        if show_broad:
+            fig3.add_trace(
+                go.Scatter(x=d3.index, y=d3['DTWEXBGS'], name="Broad Index (Right)", line=dict(color='royalblue', width=2.5)),
+                secondary_y=True,
+            )
+        
+        if show_afe:
+            fig3.add_trace(
+                go.Scatter(x=d3.index, y=d3['DTWEXAFEGS'], name="AFE Index (Right)", line=dict(color='green', width=1.5)),
+                secondary_y=True,
+            )
+            
+        if show_eme:
+            fig3.add_trace(
+                go.Scatter(x=d3.index, y=d3['DTWEXEMEGS'], name="EME Index (Right)", line=dict(color='firebrick', width=1.5)),
+                secondary_y=True,
+            )
+
+        # 레이아웃 설정
+        fig3.update_layout(
+            title=f"Volume vs Dollar Indices ({selected_label})",
+            template='plotly_white',
+            hovermode='x unified',
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        )
+
+        fig3.update_yaxes(title_text="<b>Volume</b> (Millions of $)", secondary_y=False)
+        fig3.update_yaxes(title_text="<b>Index Value</b>", secondary_y=True)
+
         st.plotly_chart(fig3, use_container_width=True)
+        
+        # 상세 데이터 표 (선택된 지표만 표시)
+        st.write("### 데이터 상세 내역")
+        st.dataframe(d3.tail(10).iloc[::-1], use_container_width=True)
+    else:
+        st.warning("데이터를 불러올 수 없습니다.")
 
 # --- 탭 4: 환율 (상대 수익률 및 개별 차트 포함) ---
 with tab4:

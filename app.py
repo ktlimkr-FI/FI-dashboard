@@ -413,3 +413,105 @@ with tab5:
             st.plotly_chart(fig_seasonal, use_container_width=True)
 
         st.success("💡 **분석 가이드:** 음영 구역(9월-12월) 내에서 막대가 솟아오르는 패턴이 보인다면, 연말 결제 수요로 인한 정기적인 레포 시장 병목 현상이 존재함을 시사합니다.")
+
+# --- 탭 6: Fed 달러 인덱스 가중치 분석 (H.10 데이터) ---
+with tab6:
+    st.subheader("📊 Fed Dollar Index Weights Analysis")
+    st.info("연준(Federal Reserve) 공식 H.10 데이터를 실시간으로 스크래핑하여 인덱스 구성 비중을 분석합니다.")
+
+    @st.cache_data(ttl=86400) # 데이터가 자주 바뀌지 않으므로 24시간 캐싱
+    def get_fed_weights_data():
+        url = "https://www.federalreserve.gov/releases/h10/weights/default.htm"
+        try:
+            # lxml 또는 html5lib 엔진 사용
+            tables = pd.read_html(url)
+            # 연준 페이지 구조: 0번(Broad), 1번(AFE), 2번(EME)
+            return {
+                "Broad Index": tables[0],
+                "AFE Index (선진국)": tables[1],
+                "EME Index (신흥국)": tables[2]
+            }
+        except Exception as e:
+            st.error(f"연준 사이트 데이터 로드 실패: {e}")
+            return None
+
+    weights_dict = get_fed_weights_data()
+
+    if weights_dict:
+        # 분석할 인덱스 선택
+        selected_idx = st.radio("분석 대상 인덱스", list(weights_dict.keys()), horizontal=True)
+        raw_df = weights_dict[selected_idx]
+
+        # 데이터 정제 로직
+        # 1. 첫 번째 열(Currency/Country)을 인덱스로 설정
+        clean_df = raw_df.set_index(raw_df.columns[0])
+        # 2. 숫자 외 데이터 제거 및 형변환
+        clean_df = clean_df.apply(pd.to_numeric, errors='coerce').dropna(how='all')
+        
+        # 최신 연도와 시계열 연도 확인
+        years = clean_df.columns.tolist()
+        latest_year = years[-1]
+
+        # --- 레이아웃: 왼쪽(파이차트), 오른쪽(시계열) ---
+        col_left, col_right = st.columns([1, 1.5])
+
+        with col_left:
+            st.write(f"#### 🥧 {selected_idx} 구성 (최신: {latest_year}년)")
+            # 상위 8개 추출 및 나머지 'Others' 합산
+            current_weights = clean_df[latest_year].sort_values(ascending=False)
+            top_8 = current_weights.head(8)
+            others = pd.Series({"Others": current_weights.iloc[8:].sum()})
+            pie_data = pd.concat([top_8, others])
+
+            fig_pie = go.Figure(data=[go.Pie(
+                labels=pie_data.index, 
+                values=pie_data.values, 
+                hole=.4,
+                textinfo='label+percent'
+            )])
+            fig_pie.update_layout(template='plotly_white', height=450, showlegend=False)
+            st.plotly_chart(fig_pie, use_container_width=True)
+
+        with col_right:
+            st.write(f"#### 📈 {selected_idx} 비중 변화 추이 (시계열)")
+            # 상위 10개 통화만 추적 (가장 최근 비중 기준)
+            top_10_names = current_weights.head(10).index.tolist()
+            trend_df = clean_df.loc[top_10_names].T
+
+            fig_trend = go.Figure()
+            for country in top_10_names:
+                fig_trend.add_trace(go.Scatter(
+                    x=trend_df.index, y=trend_df[country],
+                    mode='lines',
+                    stackgroup='one', # 누적 영역 차트
+                    name=country
+                ))
+            
+            fig_trend.update_layout(
+                template='plotly_white', 
+                height=450,
+                xaxis_title="Year",
+                yaxis_title="Weight (%)",
+                hovermode='x unified'
+            )
+            st.plotly_chart(fig_trend, use_container_width=True)
+
+        st.divider()
+
+        # --- 하단 분석 섹션: 의미 있는 변화 포착 ---
+        st.write("### 🔍 통화 비중 변동 분석")
+        
+        # 시작 연도와 최신 연도 비교
+        start_year = years[0]
+        diff_df = ((clean_df[latest_year] - clean_df[start_year])).sort_values(ascending=False)
+        
+        c1, c2 = st.columns(2)
+        with c1:
+            st.success(f"✅ **비중이 가장 많이 늘어난 통화 ({start_year} → {latest_year})**")
+            st.dataframe(diff_df.head(5).rename("비중 증가율(%)"))
+        with c2:
+            st.warning(f"⚠️ **비중이 가장 많이 줄어든 통화 ({start_year} → {latest_year})**")
+            st.dataframe(diff_df.tail(5).sort_values().rename("비중 감소율(%)"))
+
+        with st.expander("📄 연준 공식 원본 데이터 테이블 보기"):
+            st.dataframe(clean_df, use_container_width=True)

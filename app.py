@@ -1,3 +1,5 @@
+Python
+
 import streamlit as st
 import pandas as pd
 import yfinance as yf
@@ -54,7 +56,6 @@ def get_yfinance_data():
 
 # 5. 탭 구성
 tab1, tab2, tab3, tab4 = st.tabs(["📊 Repo 흐름", "💸 금리 분석", "🌐 유동성&달러", "💹 환율(Yahoo)"])
-
 # --- 탭 1: Repo ---
 with tab1:
     st.subheader("Overnight Repurchase Agreements (RPONTTLD)")

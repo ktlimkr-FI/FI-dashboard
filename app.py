@@ -81,32 +81,95 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "📊 Repo 흐름", "💸 금리 분석", "🌐 유동성&달러", "💹 환율(Yahoo)", "⚠️ Repo Fails (OFR)"
 ])
 
-# --- 탭 1: Repo 흐름 (리샘플링 로직 포함) ---
+# --- 탭 1: Repo 흐름 & SOFR 계절성 분석 ---
 with tab1:
     st.subheader("Overnight Repurchase Agreements (RPONTTLD)")
-    repo_style = st.radio("차트 종류", ["선 그래프", "바 그래프"], horizontal=True, key="r_style")
+    st.caption("레포 자금 흐름의 일간 추이를 보여줍니다. (선 차트 고정)")
     
-    repo_raw = get_fred_data('RPONTTLD').tail(days_to_show).dropna()
-    if not repo_raw.empty:
-        # 가시성 조절 (리샘플링)
-        if days_to_show >= 1825:
-            repo_df = repo_raw.resample('M').mean()
-            p_lbl = "(월간 평균)"
-        elif days_to_show >= 365:
-            repo_df = repo_raw.resample('W').mean()
-            p_lbl = "(주간 평균)"
-        else:
-            repo_df = repo_raw
-            p_lbl = "(일간)"
-
+    # 1. Repo Flow 선 차트 (일간 데이터 그대로 유지)
+    repo_df = get_fred_data('RPONTTLD').tail(days_to_show).dropna()
+    
+    if not repo_df.empty:
         fig1 = go.Figure()
-        if repo_style == "선 그래프":
-            fig1.add_trace(go.Scatter(x=repo_df.index, y=repo_df['RPONTTLD'], mode='lines', fill='tozeroy', line=dict(color='royalblue')))
-        else:
-            fig1.add_trace(go.Bar(x=repo_df.index, y=repo_df['RPONTTLD'], marker_color='royalblue', marker_line_width=0))
+        fig1.add_trace(go.Scatter(
+            x=repo_df.index, 
+            y=repo_df['RPONTTLD'], 
+            mode='lines', 
+            fill='tozeroy', 
+            line=dict(color='royalblue', width=2),
+            name="RPONTTLD"
+        ))
         
-        fig1.update_layout(title=f"Repo Flow {p_lbl}", template='plotly_white', hovermode='x unified')
+        fig1.update_layout(
+            title="Daily Overnight Repo Flow", 
+            template='plotly_white', 
+            hovermode='x unified',
+            yaxis_title="Millions of Dollars"
+        )
         st.plotly_chart(fig1, use_container_width=True)
+
+    st.divider()
+
+    # 2. SOFR & SOFR99th 계절성 분석 섹션 (10년 데이터 기준)
+    st.subheader("🗓️ SOFR & SOFR99th 월간 계절성 분석")
+    st.info("지난 10년 간의 데이터를 분석하여 월별 평균 금리 수준을 보여줍니다. (계절적 긴장 구간 확인용)")
+
+    with st.spinner('금리 계절성 패턴 분석 중...'):
+        # 10년치 데이터 로드
+        sofr_all = get_fred_data('SOFR')
+        sofr99_all = get_fred_data('SOFR99')
+        
+        # 데이터 병합 및 정리
+        seasonal_df = pd.concat([sofr_all, sofr99_all], axis=1).dropna()
+        seasonal_df = seasonal_df.tail(3650) # 최근 약 10년
+        
+        # 월(Month) 정보 추출
+        seasonal_df['Month'] = seasonal_df.index.month
+        
+        # 월별 평균 계산
+        monthly_avg = seasonal_df.groupby('Month').mean()
+
+    # 시각화: 월별 평균 금리 패턴
+    fig_sofr_season = go.Figure()
+
+    # SOFR 평균
+    fig_sofr_season.add_trace(go.Bar(
+        x=monthly_avg.index,
+        y=monthly_avg['SOFR'],
+        name="SOFR Monthly Avg",
+        marker_color='darkblue',
+        opacity=0.7
+    ))
+
+    # SOFR 99th 평균
+    fig_sofr_season.add_trace(go.Scatter(
+        x=monthly_avg.index,
+        y=monthly_avg['SOFR99'],
+        name="SOFR 99th Monthly Avg",
+        line=dict(color='firebrick', width=3, shape='spline'),
+        mode='lines+markers'
+    ))
+
+    fig_sofr_season.update_layout(
+        title="SOFR & SOFR99th 10-Year Monthly Seasonality",
+        xaxis=dict(
+            tickmode='array',
+            tickvals=list(range(1, 13)),
+            ticktext=['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+        ),
+        yaxis_title="Percent (%)",
+        template='plotly_white',
+        hovermode='x unified',
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    )
+
+    st.plotly_chart(fig_sofr_season, use_container_width=True)
+    
+    st.success("""
+    💡 **계절성 체크포인트:**
+    * 특정 월(예: 3월, 6월, 9월, 12월 분기말)에 **SOFR99th**가 평균보다 유독 높게 나타난다면, 해당 시기에 시장 내 자금 불균형이 정기적으로 발생함을 의미합니다.
+    * SOFR(막대)와 SOFR99th(선) 사이의 간격이 넓어지는 달은 시장 내 금리 편차가 커지는 시기입니다.
+    """)
 
 # --- 탭 2: 금리 분석 (Target Range 음영 포함) ---
 with tab2:

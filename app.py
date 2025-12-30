@@ -77,8 +77,8 @@ def get_ofr_fails_data():
     except: return pd.DataFrame()
 
 # 5. 탭 구성
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
-    "📊 Repo 흐름", "💸 금리 분석", "🌐 유동성&달러", "💹 환율(Yahoo)", "⚠️ Repo Fails (OFR)"
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+    "📊 Repo 흐름", "💸 금리 분석", "🌐 유동성&달러", "💹 환율(Yahoo)", "⚠️ Repo Fails (OFR)", "⚠️ Dollar Index Weight", "⚠️ Yield Curve(US&KR)"
 ])
 
 # --- 탭 1: Repo 흐름 & SOFR Spread 분석 ---

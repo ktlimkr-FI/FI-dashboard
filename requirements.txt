@@ -3,3 +3,4 @@ fredapi
 plotly
 streamlit
 yfinance
+pytz

@@ -210,87 +210,97 @@ with tab2:
         * **SOFR99th - Midpoint:** 시장 내에서 가장 비싸게 돈을 빌리는 주체가 연준의 가이드라인에서 얼마나 멀어져 있는지를 보여줍니다. 이 수치가 급증하면 시스템 리스크 신호로 해석될 수 있습니다.
         """)
         
-# --- 탭 3: 유동성&달러 (이중 축 및 개별 선택 옵션 포함) ---
+# --- 탭 3: 유동성&달러 (변화율 분석 테이블 추가) ---
 with tab3:
-    st.subheader("OBFR Volume & U.S. Dollar Indices")
-    st.caption("거래량(Volume)은 왼쪽 축, 달러 인덱스들은 오른쪽 축을 기준으로 표시됩니다.")
+    st.subheader("🌐 Global Dollar Strength Analysis")
+    st.caption("달러 인덱스와 주요 통화의 기간별 변화율을 비교합니다. (수치가 +이면 달러 강세/해당 통화 가치 하락)")
 
-    # 지표 선택을 위한 체크박스들을 한 줄에 배치
+    # 1. 상단 차트 섹션 (기존 코드 유지 및 일부 최적화)
     c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        show_obfr = st.checkbox("OBFR Volume", value=True)
-    with c2:
-        show_broad = st.checkbox("Broad Index", value=True)
-    with c3:
-        show_afe = st.checkbox("AFE Index (선진국)", value=False)
-    with c4:
-        show_eme = st.checkbox("EME Index (신흥국)", value=False)
+    with c1: show_obfr = st.checkbox("OBFR Volume", value=True)
+    with c2: show_broad = st.checkbox("Broad Index", value=True)
+    with c3: show_afe = st.checkbox("AFE Index", value=False)
+    with c4: show_eme = st.checkbox("EME Index", value=False)
 
-    # 데이터 로드 및 통합
-    d3_raw = pd.concat([
-        get_fred_data('OBFRVOL'), 
-        get_fred_data('DTWEXBGS'), 
-        get_fred_data('DTWEXAFEGS'), 
-        get_fred_data('DTWEXEMEGS')
+    # 데이터 로드 (FRED 인덱스 + Yahoo 환율 통합)
+    d3_indices = pd.concat([
+        get_fred_data('OBFRVOL'), get_fred_data('DTWEXBGS'), 
+        get_fred_data('DTWEXAFEGS'), get_fred_data('DTWEXEMEGS')
     ], axis=1).ffill()
     
-    # 2015년 이후 필터링 및 선택 기간 적용
-    d3 = d3_raw[d3_raw.index >= '2015-01-01'].tail(days_to_show)
+    yf_fx = get_yfinance_data().ffill() # 탭 4에서 쓰는 환율 데이터 가져오기
     
-    if not d3.empty:
-        # 이중 축 차트 생성
-        fig3 = make_subplots(specs=[[{"secondary_y": True}]])
-        
-        # 1. OBFR 거래량 (왼쪽 축 - 볼륨)
-        if show_obfr:
-            fig3.add_trace(
-                go.Scatter(
-                    x=d3.index, y=d3['OBFRVOL'], 
-                    name="OBFR Vol (Left)", 
-                    line=dict(color='rgba(150, 150, 150, 0.5)', width=1.5),
-                    fill='tozeroy' # 거래량 느낌을 주기 위해 바닥 채우기
-                ),
-                secondary_y=False,
-            )
-        
-        # 2. 달러 인덱스 시리즈 (오른쪽 축 - 지수)
-        if show_broad:
-            fig3.add_trace(
-                go.Scatter(x=d3.index, y=d3['DTWEXBGS'], name="Broad Index (Right)", line=dict(color='royalblue', width=2.5)),
-                secondary_y=True,
-            )
-        
-        if show_afe:
-            fig3.add_trace(
-                go.Scatter(x=d3.index, y=d3['DTWEXAFEGS'], name="AFE Index (Right)", line=dict(color='green', width=1.5)),
-                secondary_y=True,
-            )
-            
-        if show_eme:
-            fig3.add_trace(
-                go.Scatter(x=d3.index, y=d3['DTWEXEMEGS'], name="EME Index (Right)", line=dict(color='firebrick', width=1.5)),
-                secondary_y=True,
-            )
+    # 분석을 위한 전체 데이터 통합
+    combined_df = pd.concat([d3_indices, yf_fx], axis=1).ffill().dropna()
+    d3 = combined_df.tail(days_to_show)
 
-        # 레이아웃 설정
-        fig3.update_layout(
-            title=f"Volume vs Dollar Indices ({selected_label})",
-            template='plotly_white',
-            hovermode='x unified',
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    if not d3.empty:
+        fig3 = make_subplots(specs=[[{"secondary_y": True}]])
+        if show_obfr:
+            fig3.add_trace(go.Scatter(x=d3.index, y=d3['OBFRVOL'], name="OBFR Vol (Left)", 
+                                     line=dict(color='rgba(150, 150, 150, 0.5)', width=1.5), fill='tozeroy'), secondary_y=False)
+        if show_broad:
+            fig3.add_trace(go.Scatter(x=d3.index, y=d3['DTWEXBGS'], name="Broad Index (Right)", line=dict(color='royalblue', width=2.5)), secondary_y=True)
+        if show_afe:
+            fig3.add_trace(go.Scatter(x=d3.index, y=d3['DTWEXAFEGS'], name="AFE Index (Right)", line=dict(color='green', width=1.5)), secondary_y=True)
+        if show_eme:
+            fig3.add_trace(go.Scatter(x=d3.index, y=d3['DTWEXEMEGS'], name="EME Index (Right)", line=dict(color='firebrick', width=1.5)), secondary_y=True)
+
+        fig3.update_layout(template='plotly_white', hovermode='x unified', height=400,
+                          legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+        st.plotly_chart(fig3, use_container_width=True)
+
+        st.divider()
+
+        # 2. [신규] 기간별 변화율(Rate of Change) 분석 테이블
+        st.write("### 📈 달러 기준 기간별 변화율 (%)")
+        st.caption("기준일로부터 현재까지의 변동폭입니다. 빨간색은 달러 강세, 파란색은 달러 약세를 의미합니다.")
+
+        # 변화율 계산 함수
+        def calc_roc(df):
+            # 영업일 기준 오프셋 (1일, 1주, 1달, 3달, 6달, 1년)
+            intervals = {'1D': 1, '1W': 5, '1M': 21, '3M': 63, '6M': 126, '1Y': 252}
+            assets = ['DTWEXBGS', 'DTWEXAFEGS', 'DTWEXEMEGS', 'USD/KRW', 'USD/JPY', 'USD/EUR', 'USD/CNY', 'USD/MXN']
+            
+            roc_results = []
+            current_vals = df.iloc[-1]
+            
+            for asset in assets:
+                if asset in df.columns:
+                    row = {'Asset': asset}
+                    for label, days in intervals.items():
+                        if len(df) > days:
+                            prev_val = df[asset].iloc[-(days + 1)]
+                            change = ((current_vals[asset] / prev_val) - 1) * 100
+                            row[label] = round(change, 2)
+                        else:
+                            row[label] = None
+                    roc_results.append(row)
+            
+            return pd.DataFrame(roc_results).set_index('Asset')
+
+        roc_df = calc_roc(combined_df)
+
+        # 테이블 스타일링 (양수는 빨강, 음수는 파랑)
+        def color_map(val):
+            if val is None: return ''
+            color = 'red' if val > 0 else 'blue'
+            return f'color: {color}; font-weight: bold'
+
+        st.dataframe(
+            roc_df.style.applymap(color_map, subset=['1D', '1W', '1M', '3M', '6M', '1Y'])
+                       .format("{:+.2f}%", na_rep="-"),
+            use_container_width=True
         )
 
-        fig3.update_yaxes(title_text="<b>Volume</b> (Millions of $)", secondary_y=False)
-        fig3.update_yaxes(title_text="<b>Index Value</b>", secondary_y=True)
-
-        st.plotly_chart(fig3, use_container_width=True)
-        
-        # 상세 데이터 표 (선택된 지표만 표시)
-        st.write("### 데이터 상세 내역")
-        st.dataframe(d3.tail(10).iloc[::-1], use_container_width=True)
+        st.info("""
+        💡 **데이터 해석 가이드:**
+        * **달러 인덱스(DTWEX...) 상승:** 전반적인 달러 가치 상승.
+        * **환율(USD/KRW 등) 상승:** 달러 대비 해당 통화의 가치 하락 (달러 강세).
+        * 모든 지표가 **빨간색(Plus)**을 나타내면 전방위적인 '킹달러' 국면으로 해석할 수 있습니다.
+        """)
     else:
         st.warning("데이터를 불러올 수 없습니다.")
-
 # --- 탭 4: 환율 (상대 수익률 및 개별 차트 포함) ---
 with tab4:
     st.subheader("Yahoo Finance: Global Currencies")

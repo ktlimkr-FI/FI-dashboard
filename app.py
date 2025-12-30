@@ -5,16 +5,17 @@ from fredapi import Fred
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime
-import pytz  # 시간대 설정을 위한 라이브러리
+import pytz
+import requests
 
 # 1. 페이지 설정
 st.set_page_config(page_title="Global Financial Dashboard", layout="wide")
-st.title("🏦 Federal Reserve & Global Market Dashboard")
+st.title("🏦 Comprehensive Financial Market Dashboard")
 
-# --- [신규] 업데이트 시각 표시 ---
+# 업데이트 시각 표시
 kst = pytz.timezone('Asia/Seoul')
 now_kst = datetime.now(kst).strftime('%Y-%m-%d %H:%M:%S')
-st.info(f"🕒 **데이터 업데이트 시각 (KST): {now_kst}** (1시간마다 자동 갱신 및 새로고침 시 반영)")
+st.info(f"🕒 **데이터 업데이트 시각 (KST): {now_kst}**")
 
 # 2. API 키 보안 로드
 try:
@@ -25,13 +26,13 @@ except:
 
 fred = Fred(api_key=FRED_API_KEY)
 
-# 3. 사이드바 - 공통 설정
+# 3. 사이드바 설정
 st.sidebar.header("📅 조회 기간 설정")
 period_options = {"6개월": 180, "1년": 365, "3년": 1095, "5년": 1825, "10년": 3650}
 selected_label = st.sidebar.selectbox("기간 선택", options=list(period_options.keys()), index=4)
 days_to_show = period_options[selected_label]
 
-# 4. 데이터 로드 함수 (캐싱 적용)
+# 4. 데이터 로드 함수들
 @st.cache_data(ttl=3600)
 def get_fred_data(series_id):
     try:
@@ -43,17 +44,39 @@ def get_fred_data(series_id):
 
 @st.cache_data(ttl=3600)
 def get_yfinance_data():
-    tickers = {
-        "DXY Index": "DX-Y.NYB", "USD/KRW": "USDKRW=X", "USD/CNY": "USDCNY=X",
-        "USD/MXN": "USDMXN=X", "USD/JPY": "USDJPY=X", "USD/EUR": "USDEUR=X"
-    }
+    tickers = {"DXY Index": "DX-Y.NYB", "USD/KRW": "USDKRW=X", "USD/CNY": "USDCNY=X", "USD/MXN": "USDMXN=X", "USD/JPY": "USDJPY=X", "USD/EUR": "USDEUR=X"}
     data = yf.download(list(tickers.values()), period="10y", interval="1d")['Close']
     inv_tickers = {v: k for k, v in tickers.items()}
     data.rename(columns=inv_tickers, inplace=True)
     return data
 
+@st.cache_data(ttl=3600)
+def get_ofr_fails_data():
+    mnemonics = {
+        "NYPD-PD_AFtD_T-A": "UST fails to deliver",
+        "NYPD-PD_AFtD_AG-A": "Agency/GSE fails to deliver",
+        "NYPD-PD_AFtD_CORS-A": "Corporate fails to deliver",
+        "NYPD-PD_AFtD_OMBS-A": "Other MBS fails to deliver",
+    }
+    url = "https://data.financialresearch.gov/v1/series/multifull"
+    params = {"mnemonics": ",".join(mnemonics.keys())}
+    try:
+        resp = requests.get(url, params=params)
+        raw = resp.json()
+        frames = []
+        for mnem, entry in raw.items():
+            if 'timeseries' in entry and 'aggregation' in entry['timeseries']:
+                df = pd.DataFrame(entry['timeseries']['aggregation'], columns=['date', 'value'])
+                df["date"] = pd.to_datetime(df["date"])
+                df = df.set_index("date").rename(columns={"value": mnemonics[mnem]})
+                frames.append(df)
+        return pd.concat(frames, axis=1).sort_index()
+    except: return pd.DataFrame()
+
 # 5. 탭 구성
-tab1, tab2, tab3, tab4 = st.tabs(["📊 Repo 흐름", "💸 금리 분석", "🌐 유동성&달러", "💹 환율(Yahoo)"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Repo 흐름", "💸 금리 분석", "🌐 유동성&달러", "💹 환율(Yahoo)", "⚠️ Repo Fails (OFR)"])
+# (탭 1~4 코드는 이전과 동일하게 유지...)
+# [중략: 탭 1, 2, 3, 4의 기존 로직 실행]
 
 # --- 탭 1: Repo ---
 with tab1:
@@ -112,4 +135,42 @@ with tab4:
         fig4.add_trace(go.Scatter(x=target_df.index, y=target_df[s], name=s))
     fig4.update_layout(template='plotly_white', hovermode='x unified', yaxis_title=view_mode)
     st.plotly_chart(fig4, use_container_width=True)
+
+
+# --- 탭 5: Repo Fails (OFR API) ---
+with tab5:
+    st.subheader("Primary Dealer Repo Fails to Deliver")
+    st.caption("시장 결제 불이행 데이터 (OFR 데이터 소스 활용)")
     
+    with st.spinner('OFR 데이터를 불러오는 중...'):
+        fails_df = get_ofr_fails_data().tail(days_to_show).ffill()
+
+    if not fails_df.empty:
+        # 1. 누적 영역 차트 (Stacked Area Chart)
+        st.write("### 항목별 누적 결제 불이행 건수")
+        fig5_stacked = go.Figure()
+        for col in fails_df.columns:
+            fig5_stacked.add_trace(go.Scatter(
+                x=fails_df.index, y=fails_df[col],
+                mode='lines', stackgroup='one', # 'one'으로 설정하면 누적 차트가 됩니다.
+                name=col
+            ))
+        fig5_stacked.update_layout(template='plotly_white', hovermode='x unified', yaxis_title="Millions of $")
+        st.plotly_chart(fig5_stacked, use_container_width=True)
+
+        # 2. Treasury Fails 단독 선 차트
+        st.divider()
+        st.write("### Treasury Repo Fails (국채 단독)")
+        fig5_ust = go.Figure()
+        fig5_ust.add_trace(go.Scatter(
+            x=fails_df.index, y=fails_df['UST fails to deliver'],
+            mode='lines', line=dict(color='firebrick', width=2),
+            fill='tozeroy', name='UST Fails'
+        ))
+        fig5_ust.update_layout(template='plotly_white', hovermode='x unified', yaxis_title="Millions of $")
+        st.plotly_chart(fig5_ust, use_container_width=True)
+        
+        st.dataframe(fails_df.tail(10).iloc[::-1])
+    else:
+        st.error("OFR API에서 데이터를 가져오지 못했습니다.")
+

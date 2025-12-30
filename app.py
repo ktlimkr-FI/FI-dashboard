@@ -86,22 +86,68 @@ with tab3:
     fig3.update_layout(template='plotly_white', hovermode='x unified')
     st.plotly_chart(fig3, use_container_width=True)
 
-# --- 탭 4: 환율(Yahoo) ---
+# --- 탭 4: 환율(Yahoo) 수정 버전 ---
 with tab4:
-    st.subheader("Yahoo Finance: Global Currencies (10Y)")
-    yf_display = get_yfinance_data().tail(days_to_show)
-    selected_symbols = st.multiselect("표시할 지표 선택", options=list(yf_display.columns), default=list(yf_display.columns))
+    st.subheader("Global Currency Performance (10Y Daily)")
+    st.caption("스케일이 다른 지표 비교를 위해 '상대 수익률' 보기를 권장합니다.")
     
-    fig4 = go.Figure()
-    for s in selected_symbols:
-        fig4.add_trace(go.Scatter(x=yf_display.index, y=yf_display[s], name=s))
-    fig4.update_layout(template='plotly_white', hovermode='x unified')
-    st.plotly_chart(fig4, use_container_width=True)
-    
-    st.write("### 개별 상세 차트")
-    cols = st.columns(2)
-    for i, s in enumerate(selected_symbols):
-        with cols[i % 2]:
-            fig_i = go.Figure(go.Scatter(x=yf_display.index, y=yf_display[s], name=s))
-            fig_i.update_layout(title=s, height=250, margin=dict(l=0,r=0,t=30,b=0))
-            st.plotly_chart(fig_i, use_container_width=True)
+    with st.spinner('Yahoo Finance 데이터를 분석 중...'):
+        yf_display = get_yfinance_data().tail(days_to_show)
+
+    if not yf_display.empty:
+        # 1. 보기 모드 선택 (상대 수익률 vs 절대 가격)
+        view_mode = st.radio(
+            "통합 차트 보기 방식", 
+            ["상대 수익률 (시작점 100 기준)", "절대 가격 (원본)"], 
+            horizontal=True,
+            help="상대 수익률은 선택한 기간의 첫날을 100으로 설정하여 지표 간 상승/하락률을 직접 비교합니다."
+        )
+
+        selected_symbols = st.multiselect(
+            "표시할 지표 선택", 
+            options=list(yf_display.columns), 
+            default=list(yf_display.columns)
+        )
+
+        # 데이터 변환 로직
+        if view_mode == "상대 수익률 (시작점 100 기준)":
+            # 각 컬럼의 첫 번째 행 값으로 나누고 100을 곱함
+            target_df = (yf_display / yf_display.iloc[0]) * 100
+            yaxis_title = "Index (Start Date = 100)"
+        else:
+            target_df = yf_display
+            yaxis_title = "Absolute Value"
+
+        # 통합 차트 생성
+        fig4 = go.Figure()
+        for s in selected_symbols:
+            fig4.add_trace(go.Scatter(x=target_df.index, y=target_df[s], name=s))
+        
+        fig4.update_layout(
+            title=f"통합 환율 추이 ({view_mode})",
+            template='plotly_white', 
+            hovermode='x unified',
+            yaxis_title=yaxis_title
+        )
+        st.plotly_chart(fig4, use_container_width=True)
+        
+        # 2. 개별 상세 차트 (절대 가격 유지)
+        st.divider()
+        st.write("### 개별 상세 차트 (절대 가격)")
+        cols = st.columns(2)
+        for i, s in enumerate(selected_symbols):
+            with cols[i % 2]:
+                # 개별 차트는 항상 원본 절대 가격으로 표시
+                fig_i = go.Figure(go.Scatter(
+                    x=yf_display.index, 
+                    y=yf_display[s], 
+                    name=s, 
+                    line=dict(color='royalblue')
+                ))
+                fig_i.update_layout(
+                    title=f"{s} (절대 가격)", 
+                    height=250, 
+                    margin=dict(l=0, r=0, t=30, b=0),
+                    template='plotly_white'
+                )
+                st.plotly_chart(fig_i, use_container_width=True)

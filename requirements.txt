@@ -7,3 +7,4 @@ pytz
 requests
 lxml
 html5lib
+FinanceDataReader

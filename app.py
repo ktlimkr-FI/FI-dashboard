@@ -515,3 +515,4 @@ with tab6:
 
         with st.expander("📄 연준 공식 원본 데이터 테이블 보기"):
             st.dataframe(clean_df, use_container_width=True)
+

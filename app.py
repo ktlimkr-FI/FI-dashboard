@@ -133,45 +133,83 @@ with tab1:
     fig_season.update_yaxes(title_text="Spread (%)", secondary_y=True)
     st.plotly_chart(fig_season, use_container_width=True)
 
-# --- 탭 2: 금리 분석 (음영 농도 강화 버전) ---
+# --- 탭 2: 금리 분석 & 정책 이탈도(Deviation) 분석 ---
 with tab2:
     st.subheader("SOFR vs Fed Target Range")
+    
+    # 데이터 준비
     r_df = pd.concat([
         get_fred_data('SOFR'), get_fred_data('SOFR99'), 
         get_fred_data('DFEDTARU'), get_fred_data('DFEDTARL')
     ], axis=1).ffill()
+    
+    # 분석에 필요한 중간값 및 이탈도 계산
+    r_df['Mid'] = (r_df['DFEDTARU'] + r_df['DFEDTARL']) / 2
+    r_df['SOFR_Diff'] = r_df['SOFR'] - r_df['Mid']
+    r_df['SOFR99_Diff'] = r_df['SOFR99'] - r_df['Mid']
+    
     r_df = r_df[r_df.index >= '2017-01-01'].tail(days_to_show)
     
     if not r_df.empty:
+        # 차트 1: 원본 금리 추이 (진한 음영 버전)
         fig2 = go.Figure()
-        
-        # 하단 라인 (투명)
         fig2.add_trace(go.Scatter(x=r_df.index, y=r_df['DFEDTARL'], mode='lines', line=dict(width=0), showlegend=False))
-        
-        # 상단 라인 및 음영 (색상을 더 진하게 변경)
         fig2.add_trace(go.Scatter(
-            x=r_df.index, 
-            y=r_df['DFEDTARU'], 
-            mode='lines', 
-            line=dict(width=0), 
-            fill='tonexty', 
-            # 기존 0.3에서 0.6으로 농도 강화, 색상을 약간 더 깊은 블루로 변경
-            fillcolor='rgba(100, 149, 237, 0.6)', 
-            name='Target Range'
+            x=r_df.index, y=r_df['DFEDTARU'], mode='lines', line=dict(width=0), 
+            fill='tonexty', fillcolor='rgba(100, 149, 237, 0.6)', name='Target Range'
         ))
-        
-        # SOFR 및 SOFR 99th 라인
         fig2.add_trace(go.Scatter(x=r_df.index, y=r_df['SOFR'], name='SOFR', line=dict(color='darkblue', width=2.5)))
         fig2.add_trace(go.Scatter(x=r_df.index, y=r_df['SOFR99'], name='SOFR 99th', line=dict(color='orange', width=1.5, dash='dot')))
         
-        fig2.update_layout(
-            title="SOFR & Target Range Trend (Shaded Area Enhanced)", 
-            template='plotly_white', 
-            hovermode='x unified',
-            yaxis_title="Percent (%)"
-        )
+        fig2.update_layout(title="SOFR & Target Range Trend", template='plotly_white', hovermode='x unified', yaxis_title="Percent (%)")
         st.plotly_chart(fig2, use_container_width=True)
 
+        st.divider()
+
+        # 차트 2: 정책 이탈도 분석 (Deviation from Midpoint)
+        st.subheader("🎯 Policy Deviation Analysis")
+        st.caption("연준 목표 범위 중간값(0선) 대비 시장 금리의 이탈 정도를 보여줍니다.")
+        
+        
+        
+        fig_diff = go.Figure()
+        
+        # 0선(중간값 가이드라인)
+        fig_diff.add_hline(y=0, line_dash="solid", line_color="black", line_width=2, annotation_text="Target Midpoint")
+        
+        # 이탈도 데이터 추가
+        fig_diff.add_trace(go.Scatter(
+            x=r_df.index, y=r_df['SOFR_Diff'], 
+            name='SOFR - Midpoint', 
+            line=dict(color='darkblue', width=2),
+            fill='tozeroy', fillcolor='rgba(0, 0, 139, 0.1)' # 가시성을 위해 옅은 채우기 추가
+        ))
+        
+        fig_diff.add_trace(go.Scatter(
+            x=r_df.index, y=r_df['SOFR99_Diff'], 
+            name='SOFR99th - Midpoint', 
+            line=dict(color='orange', width=1.5, dash='dot')
+        ))
+        
+        fig_diff.update_layout(
+            title="Deviation from Fed Target Midpoint (Market Stress)", 
+            template='plotly_white', 
+            hovermode='x unified',
+            yaxis_title="Basis Points (Difference)",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        )
+        
+        # Y축 단위를 %로 표시하기 위한 설정
+        fig_diff.update_yaxes(ticksuffix="%")
+        
+        st.plotly_chart(fig_diff, use_container_width=True)
+        
+        st.success("""
+        💡 **분석 팁:**
+        * **SOFR - Midpoint가 0 위로 크게 튈 때:** 연준의 의도보다 시장의 실제 자금 사정이 빡빡함을 의미합니다.
+        * **SOFR99th - Midpoint:** 시장 내에서 가장 비싸게 돈을 빌리는 주체가 연준의 가이드라인에서 얼마나 멀어져 있는지를 보여줍니다. 이 수치가 급증하면 시스템 리스크 신호로 해석될 수 있습니다.
+        """)
+        
 # --- 탭 3: 유동성&달러 (이중 축 및 개별 선택 옵션 포함) ---
 with tab3:
     st.subheader("OBFR Volume & U.S. Dollar Indices")

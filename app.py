@@ -473,7 +473,7 @@ with tab5:
 
 from streamlit_gsheets import GSheetsConnection
 
-# --- 탭 6: Fed 달러 인덱스 비중 상세 분석 (TOTAL 제외 버전) ---
+# --- 탭 6: Fed 달러 인덱스 비중 분석 (가독성 개선 버전) ---
 with tab6:
     st.subheader("📊 Fed Dollar Index: Weights vs Price Analysis")
     
@@ -486,16 +486,11 @@ with tab6:
 
         df_raw = load_gsheet_data(sheet_url)
         
-        # 1. 데이터 정제 및 TOTAL 행 제거
+        # 1. TOTAL 행 제거 및 데이터 정제
         df_raw = df_raw.rename(columns={df_raw.columns[0]: 'Currency'})
-        
-        # [핵심 수정] 'TOTAL' 또는 'Total' 이라는 이름을 가진 행을 데이터셋에서 완전히 제외
         df_raw = df_raw[~df_raw['Currency'].str.upper().str.contains('TOTAL', na=False)].copy()
         
-        # 연도 컬럼 추출
         year_cols = [c for c in df_raw.columns if str(c).isdigit() or (isinstance(c, str) and c.startswith('20'))]
-        
-        # 선진국(AFE)과 신흥국(EME) 분류 (* 기호 기준)
         df_raw['Is_AFE'] = df_raw['Currency'].str.startswith('*')
         df_raw['Clean_Name'] = df_raw['Currency'].str.replace('*', '', regex=False)
 
@@ -503,12 +498,11 @@ with tab6:
         with st.spinner('달러 인덱스 가격 데이터를 로드 중...'):
             dxy_price = get_fred_data('DTWEXBGS')
 
-        # 3. [상관관계 분석 섹션]
+        # 3. [상관관계 분석 섹션] - (기존 코드 유지)
         st.write("### 📈 1. 가격-비중 상관관계 시각화")
         latest_yr = year_cols[0]
         
         if not dxy_price.empty:
-            # TOTAL이 제거된 순수 국가 리스트
             sorted_currencies = df_raw.sort_values(by=latest_yr, ascending=False)['Clean_Name'].tolist()
             selected_currency = st.selectbox("비교 분석할 통화 선택", sorted_currencies)
             
@@ -516,30 +510,17 @@ with tab6:
             weights_series = curr_row[year_cols].astype(float)
             
             fig_corr = make_subplots(specs=[[{"secondary_y": True}]])
-            
             min_year = int(min(year_cols))
             filtered_price = dxy_price[dxy_price.index.year >= min_year]
-            fig_corr.add_trace(
-                go.Scatter(x=filtered_price.index, y=filtered_price['DTWEXBGS'], 
-                           name="Broad Dollar Index Price", line=dict(color='royalblue', width=2)),
-                secondary_y=False,
-            )
             
-            weight_dates = [pd.to_datetime(f"{y}-01-01") for y in year_cols]
-            fig_corr.add_trace(
-                go.Bar(x=weight_dates, y=weights_series.values, 
-                       name=f"{selected_currency} Weight (%)", marker_color='orange', opacity=0.4),
-                secondary_y=True,
-            )
-            
+            fig_corr.add_trace(go.Scatter(x=filtered_price.index, y=filtered_price['DTWEXBGS'], name="Broad Index Price"), secondary_y=False)
+            fig_corr.add_trace(go.Bar(x=[pd.to_datetime(f"{y}-01-01") for y in year_cols], y=weights_series.values, name=f"{selected_currency} Weight (%)", opacity=0.4), secondary_y=True)
             fig_corr.update_layout(template='plotly_white', height=500, hovermode='x unified')
-            fig_corr.update_yaxes(title_text="Index Price (FRED)", secondary_y=False)
-            fig_corr.update_yaxes(title_text="Currency Weight (%)", secondary_y=True)
             st.plotly_chart(fig_corr, use_container_width=True)
 
         st.divider()
 
-        # 4. [그룹별 비중 분석 섹션]
+        # 4. [그룹별 비중 분석 섹션] - (가독성 수정 포인트)
         st.write("### 🔍 2. 그룹별 비중 분석")
         idx_choice = st.radio("분석할 그룹 선택", ["Broad (전체)", "AFE (선진국)", "EME (신흥국)"], horizontal=True)
 
@@ -550,7 +531,7 @@ with tab6:
         else:
             target_df = df_raw[df_raw['Is_AFE'] == False].copy()
 
-        # [중요] TOTAL이 빠진 상태에서 각 연도별 합이 100이 되도록 다시 정규화
+        # 정규화 (100% 기준 재계산)
         for col in year_cols:
             col_sum = target_df[col].sum()
             if col_sum > 0:
@@ -560,8 +541,29 @@ with tab6:
         with c1:
             st.write(f"#### 🥧 {idx_choice} 최신 구성")
             pie_data = target_df[['Clean_Name', latest_yr]].sort_values(by=latest_yr, ascending=False)
-            fig_pie = go.Figure(data=[go.Pie(labels=pie_data['Clean_Name'], values=pie_data[latest_yr], hole=.4)])
-            fig_pie.update_layout(height=400, showlegend=False)
+            
+            # [핵심 수정] 상위 5개 국가에 대해서만 이름을 표시하는 리스트 생성
+            display_text = [
+                f"<b>{name}</b>" if i < 5 else "" 
+                for i, name in enumerate(pie_data['Clean_Name'])
+            ]
+            
+            fig_pie = go.Figure(data=[go.Pie(
+                labels=pie_data['Clean_Name'], 
+                values=pie_data[latest_yr], 
+                hole=.4,
+                text=display_text,        # 상위 5개만 굵은 이름 표시
+                textinfo='text+percent',   # 이름(상위5개)과 퍼센트 표시
+                textposition='outside',    # 파이 바깥쪽으로 위치 지정
+                insidetextorientation='horizontal',
+                automargin=True            # 라벨이 잘리지 않게 마진 자동 조절
+            )])
+            
+            fig_pie.update_layout(
+                height=550, 
+                showlegend=False,
+                margin=dict(t=50, b=50, l=50, r=50) # 라벨 공간 확보를 위한 여백 설정
+            )
             st.plotly_chart(fig_pie, use_container_width=True)
 
         with c2:
@@ -570,7 +572,7 @@ with tab6:
             fig_trend = go.Figure()
             for curr in pie_data.head(10)['Clean_Name'].tolist():
                 fig_trend.add_trace(go.Scatter(x=trend_df.index, y=trend_df[curr], mode='lines', stackgroup='one', name=curr))
-            fig_trend.update_layout(height=400, yaxis_title="Weight (%)")
+            fig_trend.update_layout(height=450, yaxis_title="Weight (%)")
             st.plotly_chart(fig_trend, use_container_width=True)
 
     except Exception as e:

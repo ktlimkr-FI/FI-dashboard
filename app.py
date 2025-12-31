@@ -33,6 +33,36 @@ period_options = {"6개월": 180, "1년": 365, "3년": 1095, "5년": 1825, "10�
 selected_label = st.sidebar.selectbox("기간 선택", options=list(period_options.keys()), index=2)
 days_to_show = period_options[selected_label]
 
+# --- 모바일 반응형 타이틀 CSS 설정 ---
+st.markdown("""
+    <style>
+    /* 기본(PC) 타이틀 스타일 */
+    h1 { font-size: 2.5rem !important; }
+    h2 { font-size: 1.8rem !important; }
+    h3 { font-size: 1.5rem !important; }
+
+    /* 모바일 기기(화면 너비 768px 이하)일 때 적용 */
+    @media (max-width: 768px) {
+        h1 {
+            font-size: 1.5rem !important; /* st.title 크기 축소 */
+            line-height: 1.2;
+        }
+        h2 {
+            font-size: 1.2rem !important; /* st.header 크기 축소 */
+            line-height: 1.2;
+        }
+        h3 {
+            font-size: 1.0rem !important; /* st.subheader 크기 축소 */
+        }
+        /* 탭 메뉴 글자 크기도 모바일에 맞게 조정 */
+        .stTabs [data-baseweb="tab"] {
+            font-size: 0.8rem !important;
+            padding: 5px 10px !important;
+        }
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
 # --- 4. 데이터 로드 함수들 (통합 및 최적화) ---
 
 # [1] FRED 데이터 로더

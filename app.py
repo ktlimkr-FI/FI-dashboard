@@ -471,42 +471,52 @@ with tab5:
 
         st.success("💡 **분석 가이드:** 음영 구역(9월-12월) 내에서 막대가 솟아오르는 패턴이 보인다면, 연말 결제 수요로 인한 정기적인 레포 시장 병목 현상이 존재함을 시사합니다.")
 
-# --- 탭 6: Fed 달러 인덱스 가중치 분석 (수정본) ---
+# --- 탭 6: Fed 달러 인덱스 가중치 분석 (에러 방어 버전) ---
 with tab6:
     st.subheader("📊 Fed Dollar Index Weights Analysis")
-    st.info("연준(Federal Reserve) 공식 H.10 데이터를 실시간으로 스크래핑하여 인덱스 구성 비중을 분석합니다.")
+    st.info("연준(Federal Reserve) 공식 H.10 데이터를 분석합니다.")
 
-    @st.cache_data(ttl=86400) # 24시간 캐싱
+    @st.cache_data(ttl=86400)
     def get_fed_weights_data():
         url = "https://www.federalreserve.gov/releases/h10/weights/default.htm"
-        # 브라우저인 것처럼 속이기 위한 헤더 설정
+        # 헤더를 더 상세하게 설정하여 차단 가능성을 낮춤
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Referer": "https://www.federalreserve.gov/"
         }
         try:
-            # 1. requests를 사용하여 HTML 소스 가져오기
-            response = requests.get(url, headers=headers, timeout=10)
-            response.raise_for_status() # 403 등 에러 발생 시 예외 발생
+            response = requests.get(url, headers=headers, timeout=15)
+            response.raise_for_status()
             
-            # 2. 가져온 HTML 텍스트를 Pandas로 읽기
-            # StringIO를 사용하는 것이 최신 Pandas 버전에서 권장됩니다.
             from io import StringIO
-            tables = pd.read_html(StringIO(response.text))
+            # flavor='bs4' 또는 'html5lib'를 명시적으로 지정하여 파싱 능력 강화
+            tables = pd.read_html(StringIO(response.text), flavor='bs4')
             
-            # 연준 페이지 구조 확인 후 매핑
+            # [디버깅] 테이블이 몇 개나 발견되었는지 확인
+            if not tables or len(tables) < 3:
+                st.warning(f"데이터 페이지 접속은 성공했으나, 테이블을 찾을 수 없습니다. (발견된 테이블 수: {len(tables)})")
+                return None
+            
+            # 연준 페이지는 보통 Broad(0), AFE(1), EME(2) 순서입니다.
             return {
                 "Broad Index": tables[0],
                 "AFE Index (선진국)": tables[1],
                 "EME Index (신흥국)": tables[2]
             }
         except Exception as e:
-            st.error(f"연준 사이트 데이터 로드 실패: {e}")
+            st.error(f"연준 사이트 데이터 로드 중 오류 발생: {e}")
             return None
 
-    # 이후 비중 계산 및 시각화 로직은 동일하게 유지
     weights_dict = get_fed_weights_data()
-    
-    # ... (기존 코드 유지) ...
+
+    if weights_dict:
+        # (이후 시각화 로직은 기존과 동일)
+        selected_idx = st.radio("분석 대상 인덱스", list(weights_dict.keys()), horizontal=True)
+        # ... [이하 생략] ...
+    else:
+        st.error("데이터를 불러오지 못했습니다. 사이트 구조가 변경되었거나 접근이 차단되었을 수 있습니다.")
+        st.info("💡 **대안:** 연준 사이트의 보안 정책으로 인해 실시간 스크래핑이 막힐 경우, 고정된 CSV 데이터를 사용하는 방식으로 전환해야 할 수도 있습니다.")
 # --- 탭 7: 금리 커브 (Yield Curve) ---
 with tab7:
     st.subheader("📈 Treasury Yield Curve Analysis (US & KR)")

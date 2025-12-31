@@ -385,50 +385,64 @@ with tab4:
             fig_i.update_layout(title=s, height=250, margin=dict(l=0,r=0,t=30,b=0), template='plotly_white')
             st.plotly_chart(fig_i, use_container_width=True)
 
-# --- 탭 5: Repo Fails (OFR API + 계절성 분석) ---
+# --- 탭 5: Repo Fails (조회 기간 연동 및 계절성 분석) ---
 with tab5:
     st.subheader("Primary Dealer Repo Fails Analysis")
     with st.spinner('OFR 데이터를 분석 중...'):
         fails_all = get_ofr_fails_data().ffill()
+        # [연동] 사이드바 설정 기간만큼만 필터링
         fails_display = fails_all.tail(days_to_show)
 
     if not fails_all.empty:
+        # 1. 상단 섹션: 필터링된 기간의 데이터 시각화
         col1, col2 = st.columns(2)
         with col1:
-            st.write("### 항목별 누적 Fails (선택 기간)")
+            st.write(f"### 항목별 누적 Fails ({selected_label})")
             fig_stacked = go.Figure()
             for col in fails_display.columns:
-                fig_stacked.add_trace(go.Scatter(x=fails_display.index, y=fails_display[col], mode='lines', stackgroup='one', name=col))
-            fig_stacked.update_layout(template='plotly_white', height=400, yaxis_title="$M")
+                fig_stacked.add_trace(go.Scatter(
+                    x=fails_display.index, y=fails_display[col], 
+                    mode='lines', stackgroup='one', name=col
+                ))
+            fig_stacked.update_layout(template='plotly_white', height=400, yaxis_title="$M", hovermode='x unified')
             st.plotly_chart(fig_stacked, use_container_width=True)
             
         with col2:
-            st.write("### UST Fails (선택 기간)")
+            st.write(f"### UST Fails ({selected_label})")
             fig_ust = go.Figure()
-            fig_ust.add_trace(go.Scatter(x=fails_display.index, y=fails_display['UST fails to deliver'], fill='tozeroy', line=dict(color='firebrick')))
-            fig_ust.update_layout(template='plotly_white', height=400, yaxis_title="$M")
+            fig_ust.add_trace(go.Scatter(
+                x=fails_display.index, y=fails_display['UST fails to deliver'], 
+                fill='tozeroy', line=dict(color='firebrick'), name="UST Fails"
+            ))
+            fig_ust.update_layout(template='plotly_white', height=400, yaxis_title="$M", hovermode='x unified')
             st.plotly_chart(fig_ust, use_container_width=True)
 
         st.divider()
-# --- [수정] 계절성 분석 섹션 ---
-        st.write("## 🗓️ Repo Fails 계절성 분석 (UST Fails 기준)")
-        st.info("9월~12월(연말 구간)은 회색 음영으로 표시됩니다. 이 시기의 패턴 변화를 주목하세요.")
 
-        # 1. 추세 제거 (Detrending)
+        # 2. 하단 섹션: 계절성 분석 (계산은 전체 데이터, 시계열 차트는 필터링 연동)
+        st.write("## 🗓️ Repo Fails 계절성 분석 (UST Fails 기준)")
+        st.info("💡 **안내:** 계절성 패턴(막대 차트)은 10년 전체 데이터를 기반으로 산출된 구조적 지표입니다.")
+
+        # [계산] 추세 제거는 전체 데이터(fails_all)를 사용하여 52주 평균의 정확도를 확보
         ust_fails = fails_all[['UST fails to deliver']].copy()
         ust_fails['Trend'] = ust_fails['UST fails to deliver'].rolling(window=52, center=True).mean()
         ust_fails['Detrended'] = ust_fails['UST fails to deliver'] - ust_fails['Trend']
         ust_fails['Week'] = ust_fails.index.isocalendar().week
+        
+        # 주간 평균 패턴 (이 부분은 '시계열 분석'의 핵심으로 전체 기간 유지)
         seasonal_pattern = ust_fails.groupby('Week')['Detrended'].mean().reset_index()
+
+        # [연동] 추세 제거 데이터 차트만 현재 조회 기간으로 슬라이싱
+        ust_fails_display = ust_fails.tail(days_to_show)
 
         c1, c2 = st.columns(2)
         
         with c1:
-            st.write("### 1. 추세 제거 데이터 (Detrended)")
+            st.write(f"### 1. 추세 제거 데이터 (Detrended - {selected_label})")
             fig_detrended = go.Figure()
             
-            # 매년 9월 1일부터 12월 31일까지 음영 추가
-            years = ust_fails.index.year.unique()
+            # 매년 9월~12월 음영 추가
+            years = ust_fails_display.index.year.unique()
             for year in years:
                 fig_detrended.add_vrect(
                     x0=f"{year}-09-01", x1=f"{year}-12-31",
@@ -436,23 +450,28 @@ with tab5:
                     layer="below", line_width=0,
                 )
             
-            fig_detrended.add_trace(go.Scatter(x=ust_fails.index, y=ust_fails['Detrended'], line=dict(color='purple', width=1), name="Detrended"))
+            # [연동된 데이터 사용]
+            fig_detrended.add_trace(go.Scatter(
+                x=ust_fails_display.index, y=ust_fails_display['Detrended'], 
+                line=dict(color='purple', width=1.5), name="Detrended"
+            ))
             fig_detrended.add_hline(y=0, line_dash="dash", line_color="grey")
             fig_detrended.update_layout(template='plotly_white', height=400, showlegend=False)
             st.plotly_chart(fig_detrended, use_container_width=True)
 
         with c2:
-            st.write("### 2. 10년 주간 평균 계절성")
+            st.write("### 2. 10년 주간 평균 계절성 (전체 기간)")
             fig_seasonal = go.Figure()
             
-            # 주간 차트 음영: 보통 36주차(9월 초) ~ 52주차(12월 말)
+            # 주간 차트 음영 (36주~52주)
             fig_seasonal.add_vrect(
                 x0=35.5, x1=52.5,
                 fillcolor="rgba(128, 128, 128, 0.2)", opacity=0.3,
                 layer="below", line_width=0,
-                annotation_text="Sep-Dec Area", annotation_position="top left"
+                annotation_text="Sep-Dec", annotation_position="top left"
             )
             
+            # [전체 패턴 사용]
             fig_seasonal.add_trace(go.Bar(
                 x=seasonal_pattern['Week'], 
                 y=seasonal_pattern['Detrended'], 
@@ -461,19 +480,17 @@ with tab5:
             ))
             
             fig_seasonal.update_layout(
-                template='plotly_white', 
-                height=400, 
-                xaxis_title="주차 (Week)", 
-                yaxis_title="편차",
+                template='plotly_white', height=400, 
+                xaxis_title="주차 (Week)", yaxis_title="편차",
                 showlegend=False
             )
             st.plotly_chart(fig_seasonal, use_container_width=True)
 
-        st.success("💡 **분석 가이드:** 음영 구역(9월-12월) 내에서 막대가 솟아오르는 패턴이 보인다면, 연말 결제 수요로 인한 정기적인 레포 시장 병목 현상이 존재함을 시사합니다.")
+        st.success("💡 **분석 가이드:** 음영 구역(연말) 내에서 '편차'가 플러스로 튀는 현상은 해당 시기에 정기적으로 결제 실패가 급증함을 의미합니다.")
 
 from streamlit_gsheets import GSheetsConnection
 
-# --- 탭 6: Fed 달러 인덱스 비중 분석 (가독성 개선 버전) ---
+# --- 탭 6: Fed 달러 인덱스 비중 분석 (조회 기간 연동 버전) ---
 with tab6:
     st.subheader("📊 Fed Dollar Index: Weights vs Price Analysis")
     
@@ -490,37 +507,57 @@ with tab6:
         df_raw = df_raw.rename(columns={df_raw.columns[0]: 'Currency'})
         df_raw = df_raw[~df_raw['Currency'].str.upper().str.contains('TOTAL', na=False)].copy()
         
+        # 연도 컬럼 추출 및 정렬 (최근 연도가 뒤로 가도록 정렬)
         year_cols = [c for c in df_raw.columns if str(c).isdigit() or (isinstance(c, str) and c.startswith('20'))]
+        year_cols = sorted(year_cols) # 시계열 순 정렬
+        
         df_raw['Is_AFE'] = df_raw['Currency'].str.startswith('*')
         df_raw['Clean_Name'] = df_raw['Currency'].str.replace('*', '', regex=False)
 
         # 2. FRED 가격 데이터 로드
         with st.spinner('달러 인덱스 가격 데이터를 로드 중...'):
-            dxy_price = get_fred_data('DTWEXBGS')
+            dxy_price_raw = get_fred_data('DTWEXBGS')
+            # [연동] 사이드바 설정 기간만큼만 자르기
+            dxy_price = dxy_price_raw.tail(days_to_show)
 
-        # 3. [상관관계 분석 섹션] - (기존 코드 유지)
+        # 3. [상관관계 분석 섹션]
         st.write("### 📈 1. 가격-비중 상관관계 시각화")
-        latest_yr = year_cols[0]
+        latest_yr = year_cols[-1] # 가장 최신 연도
         
         if not dxy_price.empty:
             sorted_currencies = df_raw.sort_values(by=latest_yr, ascending=False)['Clean_Name'].tolist()
             selected_currency = st.selectbox("비교 분석할 통화 선택", sorted_currencies)
             
             curr_row = df_raw[df_raw['Clean_Name'] == selected_currency].iloc[0]
-            weights_series = curr_row[year_cols].astype(float)
+            
+            # [연동] 현재 조회 중인 가격 데이터의 시작 연도 확인
+            min_visible_year = dxy_price.index.min().year
+            # 선택된 기간 내에 포함된 연도 컬럼만 필터링
+            visible_year_cols = [y for y in year_cols if int(y) >= min_visible_year]
+            
+            weights_series = curr_row[visible_year_cols].astype(float)
             
             fig_corr = make_subplots(specs=[[{"secondary_y": True}]])
-            min_year = int(min(year_cols))
-            filtered_price = dxy_price[dxy_price.index.year >= min_year]
             
-            fig_corr.add_trace(go.Scatter(x=filtered_price.index, y=filtered_price['DTWEXBGS'], name="Broad Index Price"), secondary_y=False)
-            fig_corr.add_trace(go.Bar(x=[pd.to_datetime(f"{y}-01-01") for y in year_cols], y=weights_series.values, name=f"{selected_currency} Weight (%)", opacity=0.4), secondary_y=True)
-            fig_corr.update_layout(template='plotly_white', height=500, hovermode='x unified')
+            # (A) 가격 차트 (선택 기간 연동)
+            fig_corr.add_trace(go.Scatter(x=dxy_price.index, y=dxy_price['DTWEXBGS'], 
+                                         name="Broad Index Price", line=dict(color='royalblue', width=2)), 
+                               secondary_y=False)
+            
+            # (B) 비중 차트 (선택 기간 내 연도만 표시)
+            weight_dates = [pd.to_datetime(f"{y}-01-01") for y in visible_year_cols]
+            fig_corr.add_trace(go.Bar(x=weight_dates, y=weights_series.values, 
+                                     name=f"{selected_currency} Weight (%)", 
+                                     marker_color='orange', opacity=0.4), 
+                               secondary_y=True)
+            
+            fig_corr.update_layout(template='plotly_white', height=500, hovermode='x unified',
+                                  xaxis_range=[dxy_price.index.min(), dxy_price.index.max()])
             st.plotly_chart(fig_corr, use_container_width=True)
 
         st.divider()
 
-        # 4. [그룹별 비중 분석 섹션] - (가독성 수정 포인트)
+        # 4. [그룹별 비중 분석 섹션]
         st.write("### 🔍 2. 그룹별 비중 분석")
         idx_choice = st.radio("분석할 그룹 선택", ["Broad (전체)", "AFE (선진국)", "EME (신흥국)"], horizontal=True)
 
@@ -531,7 +568,7 @@ with tab6:
         else:
             target_df = df_raw[df_raw['Is_AFE'] == False].copy()
 
-        # 정규화 (100% 기준 재계산)
+        # 정규화
         for col in year_cols:
             col_sum = target_df[col].sum()
             if col_sum > 0:
@@ -539,113 +576,66 @@ with tab6:
 
         c1, c2 = st.columns([1, 1.5])
         with c1:
-            st.write(f"#### 🥧 {idx_choice} 최신 구성")
+            st.write(f"#### 🥧 {idx_choice} 최신 구성 ({latest_yr}년)")
             pie_data = target_df[['Clean_Name', latest_yr]].sort_values(by=latest_yr, ascending=False)
-            
-            # [핵심 수정] 상위 5개 국가에 대해서만 이름을 표시하는 리스트 생성
-            display_text = [
-                f"<b>{name}</b>" if i < 5 else "" 
-                for i, name in enumerate(pie_data['Clean_Name'])
-            ]
+            display_text = [f"<b>{name}</b>" if i < 5 else "" for i, name in enumerate(pie_data['Clean_Name'])]
             
             fig_pie = go.Figure(data=[go.Pie(
-                labels=pie_data['Clean_Name'], 
-                values=pie_data[latest_yr], 
-                hole=.4,
-                text=display_text,        # 상위 5개만 굵은 이름 표시
-                textinfo='text+percent',   # 이름(상위5개)과 퍼센트 표시
-                textposition='outside',    # 파이 바깥쪽으로 위치 지정
-                insidetextorientation='horizontal',
-                automargin=True            # 라벨이 잘리지 않게 마진 자동 조절
+                labels=pie_data['Clean_Name'], values=pie_data[latest_yr], hole=.4,
+                text=display_text, textinfo='text+percent', textposition='outside',
+                automargin=True
             )])
-            
-            fig_pie.update_layout(
-                height=550, 
-                showlegend=False,
-                margin=dict(t=50, b=50, l=50, r=50) # 라벨 공간 확보를 위한 여백 설정
-            )
+            fig_pie.update_layout(height=550, showlegend=False, margin=dict(t=50, b=50, l=50, r=50))
             st.plotly_chart(fig_pie, use_container_width=True)
 
         with c2:
             st.write(f"#### 📈 {idx_choice} 비중 추이")
-            trend_df = target_df.set_index('Clean_Name')[year_cols].T.sort_index()
+            # 추세 차트도 조회 기간에 맞춰 X축 필터링
+            trend_df = target_df.set_index('Clean_Name')[visible_year_cols].T.sort_index()
             fig_trend = go.Figure()
             for curr in pie_data.head(10)['Clean_Name'].tolist():
                 fig_trend.add_trace(go.Scatter(x=trend_df.index, y=trend_df[curr], mode='lines', stackgroup='one', name=curr))
             fig_trend.update_layout(height=450, yaxis_title="Weight (%)")
             st.plotly_chart(fig_trend, use_container_width=True)
 
+        # --- 5. AFE vs EME 그룹 합산 분석 (try 내부로 이동) ---
+        st.divider()
+        st.write("### 🌐 3. AFE(선진국) vs EME(신흥국) 그룹 합산 분석")
+        
+        group_trend = df_raw.groupby('Is_AFE')[visible_year_cols].sum().T
+        # 컬럼 이름 매핑 (Is_AFE가 False면 EME, True면 AFE)
+        group_trend.columns = ['Emerging (EME)', 'Advanced (AFE)'] if False in group_trend.columns else group_trend.columns
+        group_trend = group_trend.sort_index()
+
+        latest_group_val = group_trend.iloc[-1]
+        c1_sub, c2_sub = st.columns([1, 1.5])
+
+        with c1_sub:
+            st.write(f"#### 🥧 그룹별 현재 비중 ({latest_yr}년)")
+            fig_group_pie = go.Figure(data=[go.Pie(
+                labels=latest_group_val.index, values=latest_group_val.values, hole=.4,
+                marker_colors=['#EF553B', '#636EFA'], textinfo='label+percent', textposition='outside'
+            )])
+            fig_group_pie.update_layout(height=400, showlegend=False)
+            st.plotly_chart(fig_group_pie, use_container_width=True)
+
+        with c2_sub:
+            st.write("#### 📈 그룹별 비중 시계열 추이")
+            fig_group_trend = go.Figure()
+            for col, color in zip(['Emerging (EME)', 'Advanced (AFE)'], ['#EF553B', '#636EFA']):
+                if col in group_trend.columns:
+                    fig_group_trend.add_trace(go.Scatter(
+                        x=group_trend.index, y=group_trend[col], name=col,
+                        mode='lines', stackgroup='one', line=dict(color=color, width=0.5),
+                        fillcolor=f'rgba{tuple(list(int(color.lstrip("#")[i:i+2], 16) for i in (0, 2, 4)) + [0.5])}'
+                    ))
+            fig_group_trend.update_layout(template='plotly_white', height=400, yaxis_title="Weight (%)", hovermode='x unified')
+            st.plotly_chart(fig_group_trend, use_container_width=True)
+
+        st.success("💡 **매크로 인사이트:** 설정된 조회 기간 동안의 달러 인덱스 가격과 비중 변화를 동시에 분석 중입니다.")
+
     except Exception as e:
-        st.error(f"데이터 로드 실패: {e}")
-
-# --- 탭 6 하단에 추가: AFE vs EME 그룹 합산 분석 ---
-st.divider()
-st.write("### 🌐 3. AFE(선진국) vs EME(신흥국) 그룹 합산 분석")
-st.caption("Broad Dollar Index를 구성하는 두 거대 그룹의 비중 변화를 비교합니다.")
-
-# 1. 그룹별 합산 데이터 생성
-# 연도별로 AFE인 것들과 EME인 것들의 비중을 각각 합산
-group_trend = df_raw.groupby('Is_AFE')[year_cols].sum().T
-group_trend.columns = ['Emerging (EME)', 'Advanced (AFE)'] # Is_AFE가 True면 AFE, False면 EME
-group_trend = group_trend.sort_index() # 연도순 정렬
-
-# 2. 최신 비중 (가장 최근 연도)
-latest_group_val = group_trend.iloc[-1]
-
-c1, c2 = st.columns([1, 1.5])
-
-with c1:
-    st.write(f"#### 🥧 그룹별 현재 비중 ({latest_yr}년)")
-    fig_group_pie = go.Figure(data=[go.Pie(
-        labels=latest_group_val.index,
-        values=latest_group_val.values,
-        hole=.4,
-        marker_colors=['#EF553B', '#636EFA'], # EME: 빨강계열, AFE: 파랑계열
-        textinfo='label+percent',
-        textposition='outside'
-    )])
-    fig_group_pie.update_layout(height=400, showlegend=False, margin=dict(t=30, b=30, l=30, r=30))
-    st.plotly_chart(fig_group_pie, use_container_width=True)
-
-with c2:
-    st.write("#### 📈 그룹별 비중 시계열 추이")
-    fig_group_trend = go.Figure()
-    
-    # 신흥국(EME) 누적 영역
-    fig_group_trend.add_trace(go.Scatter(
-        x=group_trend.index, y=group_trend['Emerging (EME)'],
-        name="Emerging (EME)",
-        mode='lines',
-        stackgroup='one',
-        line=dict(color='#EF553B', width=0.5),
-        fillcolor='rgba(239, 85, 59, 0.5)'
-    ))
-    
-    # 선진국(AFE) 누적 영역
-    fig_group_trend.add_trace(go.Scatter(
-        x=group_trend.index, y=group_trend['Advanced (AFE)'],
-        name="Advanced (AFE)",
-        mode='lines',
-        stackgroup='one',
-        line=dict(color='#636EFA', width=0.5),
-        fillcolor='rgba(99, 110, 250, 0.5)'
-    ))
-
-    fig_group_trend.update_layout(
-        template='plotly_white',
-        height=400,
-        xaxis_title="Year",
-        yaxis_title="Total Weight (%)",
-        hovermode='x unified',
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-    )
-    st.plotly_chart(fig_group_trend, use_container_width=True)
-
-st.success("""
-💡 **매크로 인사이트:**
-* **신흥국(EME) 비중의 증가:** 만약 과거 대비 EME의 영역이 넓어지고 있다면, 이는 달러 인덱스가 글로벌 공급망 변화와 신흥국 경기 상황에 더 민감하게 반응하게 되었음을 의미합니다.
-* **선진국(AFE)의 위상:** 유로화와 엔화 위주의 AFE 비중 변화를 통해 전통적인 달러 인덱스(DXY)와 연준 Broad Index 간의 괴리가 커지고 있는지 확인할 수 있습니다.
-""")
+        st.error(f"데이터 로드 및 분석 실패: {e}")
         
 # --- 탭 7: 금리 커브 (Yield Curve) ---
 with tab7:

@@ -8,3 +8,4 @@ requests
 lxml
 html5lib
 finance-datareader
+st-gsheets-connection

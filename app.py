@@ -659,64 +659,110 @@ with tab6:
     except Exception as e:
         st.error(f"데이터 로드 및 분석 실패: {e}")
 
-# --- 탭 7: KR Yield Curve 상세 분석 (BoK API 활용) ---
+# --- 탭 7: KR Yield Curve 상세 분석 (통안채 2Y 프록시 반영) ---
 with tab7:
     st.subheader("🇰🇷 KR Treasury Yield Curve Analysis")
-    st.caption("한국은행(BoK) 공식 데이터를 활용하여 국고채 만기별 수익률 곡선을 분석합니다.")
+    st.caption("한국은행(BoK) 데이터를 활용합니다. 2년물은 시계열 확보를 위해 통안증권 금리를 사용합니다.")
 
-    # 1. 데이터 로드 실행
-    with st.spinner('한국은행에서 최신 국채 금리 데이터를 가져오는 중...'):
-        kr_curve_data = get_full_kr_yield_curve()
+    # 1. 항목 코드 설정 (사용자님의 Colab 검증 코드 반영)
+    # 010400002: 통안증권 2년 (국고채 2년 대용)
+    kr_maturities = {
+        '1Y': '010190000', '2Y': '010400002', '3Y': '010200000', 
+        '5Y': '010210000', '10Y': '010220000', '20Y': '010230000', 
+        '30Y': '010240000', '50Y': '010250000'
+    }
 
-    # 2. 데이터가 성공적으로 로드된 경우에만 차트 그리기
+    @st.cache_data(ttl=3600)
+    def get_kr_yield_curve_final():
+        global BOK_API_KEY
+        # 안전한 조회를 위해 종료일을 어제로 설정 (Colab 로직)
+        end_date = (datetime.now() - timedelta(days=1)).strftime('%Y%m%d')
+        start_date = (datetime.now() - timedelta(days=3650)).strftime('%Y%m%d')
+        
+        all_frames = []
+        
+        # 데이터 수집 진행 상황 표시
+        status_text = st.empty()
+        
+        for label, code in kr_maturities.items():
+            status_text.text(f"⏳ {label} 금리 데이터를 가져오는 중...")
+            # STAT_CODE: 817Y002 (시장금리-일별)
+            url = f"http://ecos.bok.or.kr/api/StatisticSearch/{BOK_API_KEY}/json/kr/1/10000/817Y002/D/{start_date}/{end_date}/{code}"
+            
+            try:
+                resp = requests.get(url, timeout=15)
+                data = resp.json()
+                
+                if "StatisticSearch" in data:
+                    rows = data["StatisticSearch"]["row"]
+                    df = pd.DataFrame(rows)
+                    df['TIME'] = pd.to_datetime(df['TIME'])
+                    df[label] = pd.to_numeric(df['DATA_VALUE'])
+                    all_frames.append(df[['TIME', label]].set_index('TIME'))
+                else:
+                    # 특정 항목 로드 실패 시 경고만 띄우고 계속 진행
+                    st.warning(f"⚠️ {label} 데이터 로드 건너뜀 (사유: {data.get('RESULT', {}).get('MESSAGE', 'No Data')})")
+            except Exception as e:
+                st.error(f"❌ {label} 통신 오류: {e}")
+        
+        status_text.empty() # 상태 메시지 삭제
+        
+        if all_frames:
+            # 여러 만기 데이터를 날짜 기준으로 결합
+            combined = pd.concat(all_frames, axis=1).sort_index().ffill()
+            return combined
+        return pd.DataFrame()
+
+    # 데이터 실행
+    with st.spinner('한국은행 ECOS API 연결 중...'):
+        kr_curve_data = get_kr_yield_curve_final()
+
+    # 2. 시각화 섹션
     if not kr_curve_data.empty:
-        # 최근, 1달 전, 1년 전 날짜 계산
         latest_date = kr_curve_data.index[-1]
-        try:
-            one_month_ago = kr_curve_data.index[kr_curve_data.index <= (latest_date - pd.DateOffset(months=1))][-1]
-            one_year_ago = kr_curve_data.index[kr_curve_data.index <= (latest_date - pd.DateOffset(years=1))][-1]
-        except IndexError: # 데이터 기간이 짧을 경우 대비
-            one_month_ago = kr_curve_data.index[0]
-            one_year_ago = kr_curve_data.index[0]
+        x_axis_labels = list(kr_maturities.keys()) # 만기 순서 (1Y~50Y)
 
-        # --- 차트 1: 수익률 곡선 비교 ---
+        # --- [차트 1] Yield Curve Snapshot ---
         st.write(f"### 1. Yield Curve Comparison ({latest_date.date()})")
         
-        # X축 순서 고정
-        x_labels = ['1Y', '2Y', '3Y', '5Y', '10Y', '20Y', '30Y', '50Y']
-        
         fig_curve = go.Figure()
-        
         # 현재 곡선
         fig_curve.add_trace(go.Scatter(
-            x=x_labels, y=[kr_curve_data.loc[latest_date, m] for m in x_labels if m in kr_curve_data.columns],
-            mode='lines+markers', name='Current', line=dict(color='firebrick', width=4)
+            x=x_axis_labels, 
+            y=[kr_curve_data.loc[latest_date, m] for m in x_axis_labels if m in kr_curve_data.columns],
+            mode='lines+markers', name='Latest', line=dict(color='firebrick', width=4)
         ))
-        # 1달 전 곡선
-        fig_curve.add_trace(go.Scatter(
-            x=x_labels, y=[kr_curve_data.loc[one_month_ago, m] for m in x_labels if m in kr_curve_data.columns],
-            mode='lines+markers', name='1 Month Ago', line=dict(color='rgba(255, 100, 100, 0.4)', dash='dot')
-        ))
-        
+        # 1개월 전 곡선
+        try:
+            prev_date = kr_curve_data.index[kr_curve_data.index <= (latest_date - pd.DateOffset(months=1))][-1]
+            fig_curve.add_trace(go.Scatter(
+                x=x_axis_labels, 
+                y=[kr_curve_data.loc[prev_date, m] for m in x_axis_labels if m in kr_curve_data.columns],
+                mode='lines+markers', name='1 Month Ago', line=dict(color='rgba(255, 100, 100, 0.4)', dash='dot')
+            ))
+        except: pass
+
         fig_curve.update_layout(template='plotly_white', height=500, yaxis_title="Yield (%)", hovermode='x unified')
         st.plotly_chart(fig_curve, use_container_width=True)
 
         st.divider()
 
-        # --- 차트 2: 장단기 금리차 (Spread) ---
-        st.write("### 2. Yield Spread Trend (10Y - 3Y)")
-        # 사이드바의 days_to_show와 연동
-        spread_data = (kr_curve_data['10Y'] - kr_curve_data['3Y']).tail(days_to_show)
+        # --- [차트 2] Yield Spread Trend (10Y - 2Y) ---
+        # 2년물 자리에 통안채 금리가 들어가 있어 10년치 추세가 아주 잘 나옵니다.
+        st.write(f"### 2. Yield Spread Trend (10Y - 2Y Proxy)")
+        spread_10y2y = (kr_curve_data['10Y'] - kr_curve_data['2Y']).tail(days_to_show)
         
         fig_spread = go.Figure()
         fig_spread.add_hline(y=0, line_dash="solid", line_color="black")
-        fig_spread.add_trace(go.Scatter(x=spread_data.index, y=spread_data, name="10Y-3Y Spread", fill='tozeroy'))
-        fig_spread.update_layout(template='plotly_white', height=400, yaxis_title="Spread (%)")
+        fig_spread.add_trace(go.Scatter(
+            x=spread_10y2y.index, y=spread_10y2y, 
+            name="10Y-2Y Spread", fill='tozeroy', line=dict(color='royalblue')
+        ))
+        fig_spread.update_layout(template='plotly_white', height=400, yaxis_title="Spread (%)", hovermode='x unified')
         st.plotly_chart(fig_spread, use_container_width=True)
-    
-    else:
-        st.error("데이터를 로드하지 못했습니다. 상단의 BOK_API_KEY 설정과 네트워크 상태를 확인하세요.")
 
+    else:
+        st.error("데이터를 로드하지 못했습니다. API 키와 네트워크 설정을 확인하세요.")
 # --- 탭 8: Macro Indicators (한-미 기준금리 역전 분석) ---
 with tab8:
     st.subheader("🌐 Central Bank Policy Rates (US vs KR)")

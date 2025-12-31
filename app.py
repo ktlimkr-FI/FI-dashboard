@@ -473,30 +473,131 @@ with tab5:
 
 from streamlit_gsheets import GSheetsConnection
 
-# --- 탭 6: 구글 시트 연동 버전 ---
+# --- 탭 6: Fed 달러 인덱스 비중 상세 분석 & 가격 상관관계 ---
 with tab6:
-    st.subheader("📊 Fed Dollar Index Weights Analysis (Google Sheets)")
-    
+    st.subheader("📊 Fed Dollar Index: Weights vs Price Analysis")
+    st.info("비중의 변화가 실제 달러 인덱스(Broad Index)의 가격 움직임과 어떤 관계가 있는지 분석합니다.")
+
+    # 1. 데이터 로드 (업로드하신 CSV 파일 기준)
     try:
-        # 구글 시트 연결 생성
-        conn = st.connection("gsheets", type=GSheetsConnection)
+        # 사용자 환경의 파일명에 맞춰 로드
+        df_raw = pd.read_csv("Fed Broad Dollar Index Currency Weight - 시트1.csv")
         
-        # 데이터 읽기 (첫 번째 시트 기준)
-        # 만약 시트 내에 Broad, AFE, EME가 별도 탭이라면 worksheet 파라미터로 구분 가능
-        df = conn.read()
+        # 데이터 기본 정제
+        df_raw = df_raw.rename(columns={df_raw.columns[0]: 'Currency'})
+        # 연도 컬럼들만 추출 (숫자로 된 컬럼들)
+        year_cols = [c for c in df_raw.columns if c.isdigit() or (len(c)==4 and c.startswith('20'))]
         
-        if not df.empty:
-            st.success("✅ 구글 드라이브에서 비중 데이터를 성공적으로 로드했습니다.")
-            st.dataframe(df, use_container_width=True)
+        # 선진국(AFE)과 신흥국(EME) 분류 (* 기호 기준)
+        df_raw['Is_AFE'] = df_raw['Currency'].str.startswith('*')
+        df_raw['Clean_Name'] = df_raw['Currency'].str.replace('*', '', regex=False)
+
+        # 2. [추가] FRED에서 Broad Dollar Index 가격 데이터 가져오기
+        with st.spinner('달러 인덱스 가격 데이터를 로드 중...'):
+            # FRED: DTWEXBGS (Broad Dollar Index - 실시간 지수)
+            dxy_price = get_fred_data('DTWEXBGS')
+
+        # 3. 분석 섹션: 가격-비중 상관관계 시각화
+        st.write("### 📈 1. 가격-비중 상관관계 시각화")
+        st.caption("선택한 통화의 비중 변화(막대)와 실제 달러 인덱스 가격(선)을 이중 축으로 비교합니다.")
+
+        # 통화 선택 (최신 비중이 큰 순서대로 정렬)
+        latest_yr = year_cols[0] if year_cols else None
+        if latest_yr and not dxy_price.empty:
+            sorted_currencies = df_raw.sort_values(by=latest_yr, ascending=False)['Clean_Name'].tolist()
+            selected_currency = st.selectbox("비교 분석할 통화 선택", sorted_currencies)
             
-            # 이후 시각화 로직(파이 차트 등)은 이 df를 사용해 기존과 동일하게 진행
-            # ...
+            # 선택한 통화의 데이터 추출
+            curr_row = df_raw[df_raw['Clean_Name'] == selected_currency].iloc[0]
+            weights_series = curr_row[year_cols].astype(float)
+            
+            # 시각화 (이중 축 차트 생성)
+            fig_corr = make_subplots(specs=[[{"secondary_y": True}]])
+            
+            # (A) Broad Dollar Index 가격 (FRED 데이터)
+            min_year = int(min(year_cols))
+            filtered_price = dxy_price[dxy_price.index.year >= min_year]
+            
+            fig_corr.add_trace(
+                go.Scatter(x=filtered_price.index, y=filtered_price['DTWEXBGS'], 
+                           name="Broad Dollar Index (Price)", 
+                           line=dict(color='royalblue', width=2)),
+                secondary_y=False,
+            )
+            
+            # (B) 선택된 통화의 비중 (연간 데이터)
+            # 연도 데이터를 날짜형으로 변환하여 시계열 축 일치
+            weight_dates = [pd.to_datetime(f"{y}-01-01") for y in year_cols]
+            fig_corr.add_trace(
+                go.Bar(x=weight_dates, y=weights_series.values, 
+                       name=f"{selected_currency} Weight (%)", 
+                       marker_color='orange', opacity=0.35),
+                secondary_y=True,
+            )
+            
+            fig_corr.update_layout(
+                template='plotly_white', height=500,
+                hovermode='x unified',
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+            )
+            
+            fig_corr.update_yaxes(title_text="Index Price (FRED)", secondary_y=False)
+            fig_corr.update_yaxes(title_text="Currency Weight (%)", secondary_y=True)
+            
+            st.plotly_chart(fig_corr, use_container_width=True)
+
+            st.success(f"💡 **분석 가이드:** {selected_currency}의 비중이 늘어나는 구간에서 달러 인덱스의 변동성이 어떻게 변했는지 확인해 보세요. "
+                       f"비중이 높은 통화일수록 해당 국가의 통화 정책이나 경제 상황이 달러 인덱스 전체 방향성에 더 큰 영향력을 미칩니다.")
+
+        st.divider()
+
+        # 4. 분석 섹션: 그룹별(Broad/AFE/EME) 비중 상세 분석
+        st.write("### 🔍 2. 그룹별 비중 분석")
+        idx_choice = st.radio("분석할 그룹 선택", ["Broad (전체)", "AFE (선진국)", "EME (신흥국)"], horizontal=True)
+
+        # 선택에 따른 데이터 필터링 및 비중 재계산(Normalization)
+        if idx_choice == "Broad (전체)":
+            target_df = df_raw.copy()
+        elif idx_choice == "AFE (선진국)":
+            target_df = df_raw[df_raw['Is_AFE'] == True].copy()
         else:
-            st.warning("시트에 데이터가 비어 있습니다.")
+            target_df = df_raw[df_raw['Is_AFE'] == False].copy()
+
+        # 정규화: 하위 그룹 선택 시 내부 비중 합이 100%가 되도록 재계산
+        for col in year_cols:
+            col_sum = target_df[col].sum()
+            if col_sum > 0:
+                target_df[col] = (target_df[col] / col_sum) * 100
+
+        # 시각화: 파이 차트 및 누적 영역 차트
+        c1, c2 = st.columns([1, 1.5])
+        
+        with c1:
+            st.write(f"#### 🥧 {idx_choice} 구성 ({latest_yr}년)")
+            pie_data = target_df[['Clean_Name', latest_yr]].sort_values(by=latest_yr, ascending=False)
+            top_n = 7
+            plot_pie = pie_data.head(top_n).copy()
+            if len(pie_data) > top_n:
+                others_val = pie_data.iloc[top_n:][latest_yr].sum()
+                plot_pie = pd.concat([plot_pie, pd.DataFrame({'Clean_Name': ['Others'], latest_yr: [others_val]})])
+
+            fig_pie = go.Figure(data=[go.Pie(labels=plot_pie['Clean_Name'], values=plot_pie[latest_yr], hole=.4)])
+            fig_pie.update_layout(template='plotly_white', height=400, showlegend=False)
+            st.plotly_chart(fig_pie, use_container_width=True)
+
+        with c2:
+            st.write(f"#### 📈 {idx_choice} 비중 변화 추이")
+            trend_df = target_df.set_index('Clean_Name')[year_cols].T.sort_index()
+            fig_trend = go.Figure()
+            top_10_names = pie_data.head(10)['Clean_Name'].tolist()
+            for curr in top_10_names:
+                fig_trend.add_trace(go.Scatter(x=trend_df.index, y=trend_df[curr], mode='lines', stackgroup='one', name=curr))
             
+            fig_trend.update_layout(template='plotly_white', height=400, xaxis_title="Year", yaxis_title="Weight (%)", hovermode='x unified')
+            st.plotly_chart(fig_trend, use_container_width=True)
+
     except Exception as e:
-        st.error(f"구글 시트 연결 실패: {e}")
-        st.info("💡 대안: 시트 공유 설정이 '링크가 있는 모든 사용자'로 되어 있는지 확인하세요.")
+        st.error(f"데이터 분석 도중 오류가 발생했습니다: {e}")
         
 # --- 탭 7: 금리 커브 (Yield Curve) ---
 with tab7:

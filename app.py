@@ -259,40 +259,53 @@ with tab2:
         * **SOFR99th - Midpoint:** 시장 내에서 가장 비싸게 돈을 빌리는 주체가 연준의 가이드라인에서 얼마나 멀어져 있는지를 보여줍니다. 이 수치가 급증하면 시스템 리스크 신호로 해석될 수 있습니다.
         """)
         
-# --- 탭 3: 유동성&달러 (변화율 분석 테이블 추가) ---
+# --- 탭 3: 유동성&달러 (데이터 정합성 강화 버전) ---
 with tab3:
     st.subheader("🌐 Global Dollar Strength Analysis")
-    st.caption("달러 인덱스와 주요 통화의 기간별 변화율을 비교합니다. (수치가 +이면 달러 강세/해당 통화 가치 하락)")
-
-    # 1. 상단 차트 섹션 (기존 코드 유지 및 일부 최적화)
+    
+    # 1. 지표 선택 체크박스
     c1, c2, c3, c4 = st.columns(4)
     with c1: show_obfr = st.checkbox("OBFR Volume", value=True)
     with c2: show_broad = st.checkbox("Broad Index", value=True)
     with c3: show_afe = st.checkbox("AFE Index", value=False)
     with c4: show_eme = st.checkbox("EME Index", value=False)
 
-    # 데이터 로드 (FRED 인덱스 + Yahoo 환율 통합)
-    d3_indices = pd.concat([
-        get_fred_data('OBFRVOL'), get_fred_data('DTWEXBGS'), 
-        get_fred_data('DTWEXAFEGS'), get_fred_data('DTWEXEMEGS')
-    ], axis=1).ffill()
-    
-    yf_fx = get_yfinance_data().ffill() # 탭 4에서 쓰는 환율 데이터 가져오기
-    
-    # 분석을 위한 전체 데이터 통합
-    combined_df = pd.concat([d3_indices, yf_fx], axis=1).ffill().dropna()
-    d3 = combined_df.tail(days_to_show)
+    # 2. 데이터 로드
+    with st.spinner('데이터를 통합하는 중...'):
+        d3_indices = pd.concat([
+            get_fred_data('OBFRVOL'), get_fred_data('DTWEXBGS'), 
+            get_fred_data('DTWEXAFEGS'), get_fred_data('DTWEXEMEGS')
+        ], axis=1)
+        
+        yf_fx = get_yfinance_data()
+        
+        # 두 데이터를 합치고 시차를 고려해 ffill()만 수행 (dropna()는 나중에)
+        combined_df = pd.concat([d3_indices, yf_fx], axis=1).sort_index().ffill()
+        
+        # 선택한 기간만큼 자르기
+        d3 = combined_df.tail(days_to_show)
 
-    if not d3.empty:
+    # 3. 데이터 로드 실패 시 디버깅 정보 표시
+    if d3.empty:
+        st.error("⚠️ 결합된 데이터가 비어 있습니다. 소스 데이터를 확인하세요.")
+        col1, col2 = st.columns(2)
+        with col1: st.write("FRED 데이터 상태:", "성공" if not d3_indices.empty else "실패")
+        with col2: st.write("Yahoo Finance 데이터 상태:", "성공" if not yf_fx.empty else "실패")
+    else:
+        # 4. 차트 섹션
         fig3 = make_subplots(specs=[[{"secondary_y": True}]])
-        if show_obfr:
+        
+        if show_obfr and 'OBFRVOL' in d3.columns:
             fig3.add_trace(go.Scatter(x=d3.index, y=d3['OBFRVOL'], name="OBFR Vol (Left)", 
                                      line=dict(color='rgba(150, 150, 150, 0.5)', width=1.5), fill='tozeroy'), secondary_y=False)
-        if show_broad:
+        
+        if show_broad and 'DTWEXBGS' in d3.columns:
             fig3.add_trace(go.Scatter(x=d3.index, y=d3['DTWEXBGS'], name="Broad Index (Right)", line=dict(color='royalblue', width=2.5)), secondary_y=True)
-        if show_afe:
+        
+        if show_afe and 'DTWEXAFEGS' in d3.columns:
             fig3.add_trace(go.Scatter(x=d3.index, y=d3['DTWEXAFEGS'], name="AFE Index (Right)", line=dict(color='green', width=1.5)), secondary_y=True)
-        if show_eme:
+        
+        if show_eme and 'DTWEXEMEGS' in d3.columns:
             fig3.add_trace(go.Scatter(x=d3.index, y=d3['DTWEXEMEGS'], name="EME Index (Right)", line=dict(color='firebrick', width=1.5)), secondary_y=True)
 
         fig3.update_layout(template='plotly_white', hovermode='x unified', height=400,
@@ -301,55 +314,50 @@ with tab3:
 
         st.divider()
 
-        # 2. [신규] 기간별 변화율(Rate of Change) 분석 테이블
+        # 5. 변화율 분석 테이블
         st.write("### 📈 달러 기준 기간별 변화율 (%)")
-        st.caption("기준일로부터 현재까지의 변동폭입니다. 빨간색은 달러 강세, 파란색은 달러 약세를 의미합니다.")
-
-        # 변화율 계산 함수
+        
         def calc_roc(df):
-            # 영업일 기준 오프셋 (1일, 1주, 1달, 3달, 6달, 1년)
             intervals = {'1D': 1, '1W': 5, '1M': 21, '3M': 63, '6M': 126, '1Y': 252}
             assets = ['DTWEXBGS', 'DTWEXAFEGS', 'DTWEXEMEGS', 'USD/KRW', 'USD/JPY', 'USD/EUR', 'USD/CNY', 'USD/MXN']
             
             roc_results = []
+            # 유효한 마지막 데이터 가져오기 (가장 최근 행)
             current_vals = df.iloc[-1]
             
             for asset in assets:
-                if asset in df.columns:
+                if asset in df.columns and not pd.isna(current_vals[asset]):
                     row = {'Asset': asset}
                     for label, days in intervals.items():
                         if len(df) > days:
+                            # 시차를 고려하여 NaN이 아닌 유효한 과거 값 찾기
                             prev_val = df[asset].iloc[-(days + 1)]
-                            change = ((current_vals[asset] / prev_val) - 1) * 100
-                            row[label] = round(change, 2)
+                            if not pd.isna(prev_val) and prev_val != 0:
+                                change = ((current_vals[asset] / prev_val) - 1) * 100
+                                row[label] = round(change, 2)
+                            else:
+                                row[label] = None
                         else:
                             row[label] = None
                     roc_results.append(row)
-            
             return pd.DataFrame(roc_results).set_index('Asset')
 
         roc_df = calc_roc(combined_df)
 
-        # 테이블 스타일링 (양수는 빨강, 음수는 파랑)
-        def color_map(val):
-            if val is None: return ''
-            color = 'red' if val > 0 else 'blue'
-            return f'color: {color}; font-weight: bold'
+        if not roc_df.empty:
+            def color_map(val):
+                if val is None or pd.isna(val): return ''
+                color = '#EF553B' if val > 0 else '#636EFA' # Plotly 표준 빨강/파랑
+                return f'color: {color}; font-weight: bold'
 
-        st.dataframe(
-            roc_df.style.applymap(color_map, subset=['1D', '1W', '1M', '3M', '6M', '1Y'])
-                       .format("{:+.2f}%", na_rep="-"),
-            use_container_width=True
-        )
-
-        st.info("""
-        💡 **데이터 해석 가이드:**
-        * **달러 인덱스(DTWEX...) 상승:** 전반적인 달러 가치 상승.
-        * **환율(USD/KRW 등) 상승:** 달러 대비 해당 통화의 가치 하락 (달러 강세).
-        * 모든 지표가 **빨간색(Plus)**을 나타내면 전방위적인 '킹달러' 국면으로 해석할 수 있습니다.
-        """)
-    else:
-        st.warning("데이터를 불러올 수 없습니다.")
+            st.dataframe(
+                roc_df.style.applymap(color_map)
+                           .format("{:+.2f}%", na_rep="-"),
+                use_container_width=True
+            )
+        else:
+            st.info("변화율을 계산할 수 있는 최신 데이터가 부족합니다.")
+            
 # --- 탭 4: 환율 (상대 수익률 및 개별 차트 포함) ---
 with tab4:
     st.subheader("Yahoo Finance: Global Currencies")

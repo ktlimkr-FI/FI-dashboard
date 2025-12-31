@@ -473,13 +473,10 @@ with tab5:
 
 from streamlit_gsheets import GSheetsConnection
 
-# --- 탭 6: Fed 달러 인덱스 비중 상세 분석 (구글 시트 직접 연동) ---
+# --- 탭 6: Fed 달러 인덱스 비중 상세 분석 (TOTAL 제외 버전) ---
 with tab6:
     st.subheader("📊 Fed Dollar Index: Weights vs Price Analysis")
-    st.info("구글 스프레드시트의 비중 데이터와 FRED 가격 데이터를 실시간으로 결합하여 분석합니다.")
-
-    # 1. 구글 시트 데이터 로드 (제공해주신 링크 활용)
-    # /edit... 부분을 /export?format=csv로 변경하면 Pandas에서 바로 읽을 수 있습니다.
+    
     sheet_url = "https://docs.google.com/spreadsheets/d/1rOh_s5JeKw_mP98u2URa8OO-xBgSdAHn73qqjnI95rs/export?format=csv"
     
     try:
@@ -489,35 +486,37 @@ with tab6:
 
         df_raw = load_gsheet_data(sheet_url)
         
-        # 데이터 정제
+        # 1. 데이터 정제 및 TOTAL 행 제거
         df_raw = df_raw.rename(columns={df_raw.columns[0]: 'Currency'})
-        # 연도 컬럼 추출 (컬럼명에서 숫자로만 구성된 것들 선택)
+        
+        # [핵심 수정] 'TOTAL' 또는 'Total' 이라는 이름을 가진 행을 데이터셋에서 완전히 제외
+        df_raw = df_raw[~df_raw['Currency'].str.upper().str.contains('TOTAL', na=False)].copy()
+        
+        # 연도 컬럼 추출
         year_cols = [c for c in df_raw.columns if str(c).isdigit() or (isinstance(c, str) and c.startswith('20'))]
         
         # 선진국(AFE)과 신흥국(EME) 분류 (* 기호 기준)
         df_raw['Is_AFE'] = df_raw['Currency'].str.startswith('*')
         df_raw['Clean_Name'] = df_raw['Currency'].str.replace('*', '', regex=False)
 
-        # 2. FRED에서 Broad Dollar Index 가격 데이터 가져오기
+        # 2. FRED 가격 데이터 로드
         with st.spinner('달러 인덱스 가격 데이터를 로드 중...'):
             dxy_price = get_fred_data('DTWEXBGS')
 
         # 3. [상관관계 분석 섹션]
         st.write("### 📈 1. 가격-비중 상관관계 시각화")
-        latest_yr = year_cols[0] # 첫 번째 연도 컬럼을 최신으로 가정
+        latest_yr = year_cols[0]
         
         if not dxy_price.empty:
+            # TOTAL이 제거된 순수 국가 리스트
             sorted_currencies = df_raw.sort_values(by=latest_yr, ascending=False)['Clean_Name'].tolist()
             selected_currency = st.selectbox("비교 분석할 통화 선택", sorted_currencies)
             
-            # 선택한 통화 데이터 추출
             curr_row = df_raw[df_raw['Clean_Name'] == selected_currency].iloc[0]
             weights_series = curr_row[year_cols].astype(float)
             
-            # 이중 축 차트 시각화
             fig_corr = make_subplots(specs=[[{"secondary_y": True}]])
             
-            # 가격 데이터 (FRED)
             min_year = int(min(year_cols))
             filtered_price = dxy_price[dxy_price.index.year >= min_year]
             fig_corr.add_trace(
@@ -526,7 +525,6 @@ with tab6:
                 secondary_y=False,
             )
             
-            # 비중 데이터 (Google Sheets)
             weight_dates = [pd.to_datetime(f"{y}-01-01") for y in year_cols]
             fig_corr.add_trace(
                 go.Bar(x=weight_dates, y=weights_series.values, 
@@ -541,7 +539,7 @@ with tab6:
 
         st.divider()
 
-        # 4. [그룹별 비중 분석 섹션: Broad, AFE, EME]
+        # 4. [그룹별 비중 분석 섹션]
         st.write("### 🔍 2. 그룹별 비중 분석")
         idx_choice = st.radio("분석할 그룹 선택", ["Broad (전체)", "AFE (선진국)", "EME (신흥국)"], horizontal=True)
 
@@ -552,7 +550,7 @@ with tab6:
         else:
             target_df = df_raw[df_raw['Is_AFE'] == False].copy()
 
-        # 비중 재계산 (Normalization)
+        # [중요] TOTAL이 빠진 상태에서 각 연도별 합이 100이 되도록 다시 정규화
         for col in year_cols:
             col_sum = target_df[col].sum()
             if col_sum > 0:
@@ -570,14 +568,13 @@ with tab6:
             st.write(f"#### 📈 {idx_choice} 비중 추이")
             trend_df = target_df.set_index('Clean_Name')[year_cols].T.sort_index()
             fig_trend = go.Figure()
-            for curr in pie_data.head(10)['Clean_Name'].tolist(): # 상위 10개만 표시
+            for curr in pie_data.head(10)['Clean_Name'].tolist():
                 fig_trend.add_trace(go.Scatter(x=trend_df.index, y=trend_df[curr], mode='lines', stackgroup='one', name=curr))
             fig_trend.update_layout(height=400, yaxis_title="Weight (%)")
             st.plotly_chart(fig_trend, use_container_width=True)
 
     except Exception as e:
         st.error(f"데이터 로드 실패: {e}")
-        st.info("💡 구글 시트의 공유 설정이 '링크가 있는 모든 사용자에게 공개'로 되어 있는지 확인해 주세요.")
         
 # --- 탭 7: 금리 커브 (Yield Curve) ---
 with tab7:

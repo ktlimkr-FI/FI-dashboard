@@ -765,8 +765,78 @@ with tab7:
     else:
         plot_df = master_df.tail(days_to_show)
         has_base = 'KR_BaseRate' in plot_df.columns
+
+# --- [섹션 1] Yield Curve Dynamics (Snapshot 분석) ---
+        st.write("### 📉 1. Yield Curve Dynamics")
         
-        # 탭 구성
+        latest_date = master_df.index[-1]
+        # 분석할 KR 만기 리스트
+        kr_mats = ['1Y', '2Y', '3Y', '5Y', '10Y', '20Y', '30Y']
+        available_kr = [m for m in kr_mats if m in master_df.columns]
+        
+        # 과거 특정 시점의 날짜를 찾는 함수
+        def get_hist_date(target_df, offset_delta):
+            target = latest_date - offset_delta
+            return target_df.index[target_df.index <= target][-1]
+
+        # 비교할 6개 시점 설정
+        history_points = {
+            'Current': latest_date,
+            '1W Ago': get_hist_date(master_df, timedelta(weeks=1)),
+            '1M Ago': get_hist_date(master_df, pd.DateOffset(months=1)),
+            '3M Ago': get_hist_date(master_df, pd.DateOffset(months=3)),
+            '6M Ago': get_hist_date(master_df, pd.DateOffset(months=6)),
+            '1Y Ago': get_hist_date(master_df, pd.DateOffset(years=1))
+        }
+
+        col_left, col_right = st.columns(2)
+
+        with col_left:
+            st.write("#### 🇰🇷 KR Treasury Curve History")
+            fig_kr_shape = go.Figure()
+            # 시점별 색상 정의 (최신일수록 진하고 붉은색)
+            colors = ['#B22222', '#FF4500', '#FF8C00', '#4169E1', '#6495ED', '#A9A9A9']
+            
+            for (name, d), color in zip(history_points.items(), colors):
+                y_vals = [master_df.loc[d, m] for m in available_kr]
+                fig_kr_shape.add_trace(go.Scatter(
+                    x=available_kr, y=y_vals, name=name,
+                    line=dict(color=color, width=3 if name=='Current' else 1.5,
+                             dash='solid' if name=='Current' else 'dot'),
+                    mode='lines+markers'
+                ))
+            
+            fig_kr_shape.update_layout(xaxis_title="Maturity", yaxis_title="Yield (%)", height=450)
+            st.plotly_chart(apply_mobile_style(fig_kr_shape), use_container_width=True)
+
+        with col_right:
+            st.write("#### 🇺🇸 vs 🇰🇷 Current Comparison")
+            fig_us_kr = go.Figure()
+            
+            # KR Current
+            fig_us_kr.add_trace(go.Scatter(
+                x=available_kr, y=[master_df.loc[latest_date, m] for m in available_kr],
+                name="KR Treasury", line=dict(color='#B22222', width=3), mode='lines+markers'
+            ))
+            
+            # US Current (US 만기물: US1Y, US2Y 등)
+            us_mats = ['US1Y', 'US2Y', 'US3Y', 'US5Y', 'US10Y', 'US30Y']
+            # X축 라벨을 KR과 맞추기 위해 'US' 제거
+            ux = [m.replace('US','') for m in us_mats if m in master_df.columns]
+            uy = [master_df.loc[latest_date, m] for m in us_mats if m in master_df.columns]
+            
+            if uy:
+                fig_us_kr.add_trace(go.Scatter(
+                    x=ux, y=uy, name="US Treasury",
+                    line=dict(color='#4169E1', width=3), mode='lines+markers'
+                ))
+            
+            fig_us_kr.update_layout(xaxis_title="Maturity", yaxis_title="Yield (%)", height=450)
+            st.plotly_chart(apply_mobile_style(fig_us_kr), use_container_width=True)
+
+        st.divider()
+    
+        # [섹션2: 스프레드 분석 탭 구성
         t1, t2, t3 = st.tabs(["📊 구간별 스프레드", "🏛️ 기준금리 대비", "🔍 데이터 점검"])
         
         with t1:

@@ -855,6 +855,51 @@ with tab7:
 
     else:
         st.error("한국은행 API에서 데이터를 가져오지 못했습니다. API 키와 호출 한도를 확인하세요.")
+
+    # --- [신규 섹션] 3. 정밀 스프레드 분석 매트릭스 ---
+        st.divider()
+        st.write("### 📊 3. Detailed Spread Matrix")
+        
+        col_sp1, col_sp2 = st.tabs(["구간별 스프레드 (Slope)", "기준금리 대비 스프레드"])
+
+        with col_sp1:
+            st.write("#### 🔍 구간별 커브 기울기 (Slope)")
+            # 요청하신 구간 정의
+            interval_pairs = [('2Y', '1Y'), ('3Y', '2Y'), ('5Y', '3Y'), ('10Y', '5Y'), ('30Y', '10Y')]
+            
+            fig_slope = go.Figure()
+            for long_m, short_m in interval_pairs:
+                if long_m in df_kr.columns and short_m in df_kr.columns:
+                    slope = (df_kr[long_m] - df_kr[short_m]).tail(days_to_show)
+                    fig_slope.add_trace(go.Scatter(x=slope.index, y=slope, name=f"{long_m}-{short_m}"))
+            
+            fig_slope.add_hline(y=0, line_dash="dash", line_color="black")
+            fig_slope.update_layout(yaxis_title="Spread (%p)", height=500)
+            st.plotly_chart(apply_mobile_style(fig_slope), use_container_width=True)
+            st.caption("※ 각 구간의 숫자가 클수록 커브가 가파르고(Steep), 작을수록 평탄함(Flat)을 의미합니다.")
+
+        with col_sp2:
+            st.write("#### 🏛️ 만기별 금리 vs 기준금리 스프레드")
+            if 'KR_BaseRate' in df_kr.columns:
+                # 요청하신 만기 리스트
+                target_mats = ['1Y', '2Y', '3Y', '5Y', '10Y', '30Y']
+                
+                fig_base_spread = go.Figure()
+                for m in target_mats:
+                    if m in df_kr.columns:
+                        b_spread = (df_kr[m] - df_kr['KR_BaseRate']).tail(days_to_show)
+                        fig_base_spread.add_trace(go.Scatter(x=b_spread.index, y=b_spread, name=f"{m} - Base"))
+                
+                fig_base_spread.add_hline(y=0, line_dash="solid", line_color="black", line_width=2)
+                fig_base_spread.update_layout(yaxis_title="Spread (%p)", height=500)
+                st.plotly_chart(apply_mobile_style(fig_base_spread), use_container_width=True)
+                st.info("""
+                💡 **기준금리 대비 스프레드 해석:**
+                * **(+) 영역:** 시장이 향후 기준금리 인상을 예상하거나 기간 프리미엄이 존재함.
+                * **(-) 영역:** 시장이 향후 기준금리 인하를 강력하게 선반영하고 있음 (역전 현상).
+                """)
+            else:
+                st.warning("한국은행 기준금리 데이터를 불러오지 못해 분석을 표시할 수 없습니다.")
         
 # --- 탭 8: Macro Indicators (한-미 기준금리 역전 분석) ---
 with tab8:

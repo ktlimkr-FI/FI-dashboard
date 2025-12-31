@@ -659,124 +659,105 @@ with tab6:
     except Exception as e:
         st.error(f"데이터 로드 및 분석 실패: {e}")
 
-# --- 탭 7: KR Yield Curve (최종 보완 및 디버깅 모드) ---
+# --- 탭 7: KR Yield Curve (2Y 하이브리드 로직 반영) ---
 with tab7:
     st.subheader("🇰🇷 KR Treasury Yield Curve Analysis")
-    
-    # 1. 항목 코드 (사용자 검증 완료된 코드들)
-    # 010400002(통안2Y) 포함
+    st.info("💡 **데이터 구성 안내:** 국고채 2년물은 2021년 3월부터 발행되었습니다. 따라서 2021년 2월 이전은 **통안증권 2년물**을, 그 이후는 **국고채 2년물** 데이터를 결합하여 분석합니다.")
+
+    # 1. 항목 코드 정의
+    # 010200010: 국고채 2년 (신규)
+    # 010400002: 통안증권 2년 (프록시)
     kr_maturities = {
-        '1Y': '010190000', '2Y': '010400002', '3Y': '010200000', 
-        '5Y': '010210000', '10Y': '010220000', '20Y': '010230000', 
-        '30Y': '010240000', '50Y': '010250000'
+        '1Y': '010190000', '3Y': '010200000', '5Y': '010210000', 
+        '10Y': '010220000', '20Y': '010230000', '30Y': '010240000'
     }
 
     @st.cache_data(ttl=3600)
-    def fetch_kr_yield_data_robust():
+    def fetch_kr_yield_hybrid_2y():
         api_key = st.secrets.get("BOK_API_KEY")
-        if not api_key: return None, "API 키를 찾을 수 없습니다."
-
-        # 안전하게 어제 날짜까지 조회
         end_date = (datetime.now() - timedelta(days=1)).strftime('%Y%m%d')
-        start_date = (datetime.now() - timedelta(days=3650)).strftime('%Y%m%d')
+        start_date = "20100101" # 충분한 과거 데이터 확보
         
+        # (A) 기본 만기물 로드
         results = []
-        errors = []
-
         for label, code in kr_maturities.items():
             url = f"http://ecos.bok.or.kr/api/StatisticSearch/{api_key}/json/kr/1/10000/817Y002/D/{start_date}/{end_date}/{code}"
             try:
-                resp = requests.get(url, timeout=15)
-                data = resp.json()
-                
-                if "StatisticSearch" in data:
-                    rows = data["StatisticSearch"]["row"]
-                    tmp_df = pd.DataFrame(rows)
-                    tmp_df['date'] = pd.to_datetime(tmp_df['TIME'])
-                    tmp_df[label] = pd.to_numeric(tmp_df['DATA_VALUE'])
-                    results.append(tmp_df[['date', label]].set_index('date'))
-                else:
-                    msg = data.get("RESULT", {}).get("MESSAGE", "Unknown Error")
-                    errors.append(f"{label}: {msg}")
-            except Exception as e:
-                errors.append(f"{label}: 통신 오류 ({str(e)})")
+                resp = requests.get(url, timeout=10)
+                df = pd.DataFrame(resp.json()["StatisticSearch"]["row"])
+                df['date'] = pd.to_datetime(df['TIME'])
+                df[label] = pd.to_numeric(df['DATA_VALUE'])
+                results.append(df[['date', label]].set_index('date'))
+            except: continue
+
+        # (B) 2년물 하이브리드 로직
+        # 1. 국고채 2년 로드
+        url_ktb2 = f"http://ecos.bok.or.kr/api/StatisticSearch/{api_key}/json/kr/1/10000/817Y002/D/{start_date}/{end_date}/010200010"
+        # 2. 통안채 2년 로드
+        url_msb2 = f"http://ecos.bok.or.kr/api/StatisticSearch/{api_key}/json/kr/1/10000/817Y002/D/{start_date}/{end_date}/010400002"
         
-        if not results:
-            return None, "모든 항목 로드 실패: " + " | ".join(errors)
-        
-        # 데이터 결합 (날짜 기준)
-        final_df = pd.concat(results, axis=1).sort_index().ffill()
-        return final_df, errors
-
-    # 데이터 호출
-    with st.spinner('한국은행에서 수익률 데이터를 분석 중...'):
-        yield_df, load_errors = fetch_kr_yield_data_robust()
-
-    # 2. 결과 출력
-    if yield_df is not None:
-        if load_errors:
-            with st.expander("⚠️ 일부 데이터 로드 경고 (클릭하여 확인)"):
-                for err in load_errors: st.write(err)
-
-        latest_date = yield_df.index[-1]
-        st.success(f"✅ 최신 데이터 날짜: {latest_date.date()}")
-
-        # --- 차트 1: Yield Curve Snapshot ---
-        x_order = [m for m in kr_maturities.keys() if m in yield_df.columns]
-        y_vals = yield_df.loc[latest_date, x_order].values
-
-        fig_curve = go.Figure()
-        fig_curve.add_trace(go.Scatter(
-            x=x_order, y=y_vals,
-            mode='lines+markers', name='Latest',
-            line=dict(color='firebrick', width=4),
-            marker=dict(size=10)
-        ))
-        
-        # 1개월 전 비교 (있을 경우만)
         try:
-            prev_date = yield_df.index[yield_df.index <= (latest_date - pd.DateOffset(months=1))][-1]
-            y_vals_prev = yield_df.loc[prev_date, x_order].values
-            fig_curve.add_trace(go.Scatter(
-                x=x_order, y=y_vals_prev,
-                mode='lines+markers', name='1 Month Ago',
-                line=dict(color='gray', dash='dot')
-            ))
-        except: pass
+            ktb2 = pd.DataFrame(requests.get(url_ktb2).json()["StatisticSearch"]["row"])
+            ktb2['date'] = pd.to_datetime(ktb2['TIME'])
+            ktb2 = ktb2[['date', 'DATA_VALUE']].rename(columns={'DATA_VALUE': 'KTB2'}).set_index('date')
+            ktb2['KTB2'] = pd.to_numeric(ktb2['KTB2'])
 
-        fig_curve.update_layout(
-            title=f"KR Treasury Yield Curve ({latest_date.date()})",
-            template='plotly_white', height=500,
-            xaxis_title="만기 (Maturity)", yaxis_title="금리 (%)",
-            hovermode='x unified'
-        )
+            msb2 = pd.DataFrame(requests.get(url_msb2).json()["StatisticSearch"]["row"])
+            msb2['date'] = pd.to_datetime(msb2['TIME'])
+            msb2 = msb2[['date', 'DATA_VALUE']].rename(columns={'DATA_VALUE': 'MSB2'}).set_index('date')
+            msb2['MSB2'] = pd.to_numeric(msb2['MSB2'])
+
+            # 결합: 국고채 2년이 있으면 국고채, 없으면 통안채
+            hybrid_2y = ktb2.combine_first(msb2).rename(columns={'KTB2': '2Y'})
+            results.append(hybrid_2y[['2Y']])
+            
+            # 전환 시점 찾기 (국고채 2년물이 처음 나타난 날짜)
+            switch_date = ktb2.index.min()
+        except:
+            switch_date = None
+
+        final_df = pd.concat(results, axis=1).sort_index().ffill()
+        return final_df, switch_date
+
+    with st.spinner('한국은행에서 국채 데이터를 하이브리드로 구성 중...'):
+        yield_df, switch_date = fetch_kr_yield_hybrid_2y()
+
+    if not yield_df.empty:
+        latest_date = yield_df.index[-1]
+        
+        # 1. 시계열 차트 (2Y 데이터 전환점 강조)
+        st.write("### 📈 1. 2-Year Yield Series & Source Switch")
+        fig_2y = go.Figure()
+        
+        fig_2y.add_trace(go.Scatter(x=yield_df.index, y=yield_df['2Y'], name="2Y Yield (Hybrid)", line=dict(color='orange')))
+        
+        if switch_date:
+            fig_2y.add_vline(x=switch_date, line_dash="dash", line_color="red", 
+                             annotation_text="KTB 2Y 발행 시작 (전환점)", annotation_position="top left")
+            st.caption(f"📍 **전환 시점:** {switch_date.date()} 이전 데이터는 통안채(MSB), 이후는 국고채(KTB)입니다.")
+
+        fig_2y.update_layout(template='plotly_white', height=400, yaxis_title="Yield (%)")
+        st.plotly_chart(fig_2y, use_container_width=True)
+
+        st.divider()
+
+        # 2. Yield Curve Snapshot
+        st.write(f"### 2. Yield Curve Snapshot ({latest_date.date()})")
+        x_labels = ['1Y', '2Y', '3Y', '5Y', '10Y', '20Y', '30Y']
+        y_vals = [yield_df.loc[latest_date, m] for m in x_labels if m in yield_df.columns]
+        
+        fig_curve = go.Figure()
+        fig_curve.add_trace(go.Scatter(x=x_labels, y=y_vals, mode='lines+markers', line=dict(color='firebrick', width=4)))
+        fig_curve.update_layout(template='plotly_white', height=450, yaxis_title="Yield (%)")
         st.plotly_chart(fig_curve, use_container_width=True)
 
-        # --- 차트 2: Spread 분석 ---
-        st.divider()
-        col_left, col_right = st.columns(2)
-        
-        with col_left:
-            st.write("### 📉 장단기 금리차 (10Y-3Y)")
-            if '10Y' in yield_df.columns and '3Y' in yield_df.columns:
-                spread = (yield_df['10Y'] - yield_df['3Y']).tail(days_to_show)
-                fig_s1 = go.Figure()
-                fig_s1.add_hline(y=0, line_dash="dash")
-                fig_s1.add_trace(go.Scatter(x=spread.index, y=spread, fill='tozeroy', line=dict(color='royalblue')))
-                fig_s1.update_layout(template='plotly_white', height=350)
-                st.plotly_chart(fig_s1, use_container_width=True)
-        
-        with col_right:
-            st.write("### 📉 초장기 금리차 (30Y-10Y)")
-            if '30Y' in yield_df.columns and '10Y' in yield_df.columns:
-                spread2 = (yield_df['30Y'] - yield_df['10Y']).tail(days_to_show)
-                fig_s2 = go.Figure()
-                fig_s2.add_hline(y=0, line_dash="dash")
-                fig_s2.add_trace(go.Scatter(x=spread2.index, y=spread2, fill='tozeroy', line=dict(color='forestgreen')))
-                fig_s2.update_layout(template='plotly_white', height=350)
-                st.plotly_chart(fig_s2, use_container_width=True)
-    else:
-        st.error(f"❌ 데이터를 불러오지 못했습니다: {load_errors}")
+        # 3. 상세 설명
+        st.info(f"""
+        🔍 **수익률 곡선 분석 포인트:**
+        * **데이터 하이브리드:** 국고채 2년물은 비교적 최근에 도입된 만기물로, 장기 시계열 분석을 위해 한국은행 통계표 상의 **통안증권 2년 금리**와 결합되었습니다.
+        * **전환점({switch_date.date() if switch_date else '-'}):** 이 날짜를 기점으로 프록시 데이터에서 실제 벤치마크 국채 데이터로 정교화되었습니다.
+        * **해석:** 현재의 2Y 금리는 시장의 단기 금리 전망을 가장 잘 반영하며, 10Y-2Y 스프레드를 통해 경기 침체 가능성을 진단할 수 있습니다.
+        """)
         
 # --- 탭 8: Macro Indicators (한-미 기준금리 역전 분석) ---
 with tab8:

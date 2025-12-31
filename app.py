@@ -899,39 +899,109 @@ with tab7:
                     fig_2y.add_vline(x=switch_date, line_dash="dash", line_color="red", annotation_text="KTB 시작")
                 st.plotly_chart(apply_mobile_style(fig_2y), use_container_width=True)
         
-# --- 탭 8: Macro Indicators (한-미 기준금리 역전 분석) ---
+# --- 탭 8: Global Macro Data (국가별 탭 구성) ---
 with tab8:
-    st.subheader("🌐 Central Bank Policy Rates (US vs KR)")
-    st.caption("한국은행과 연준의 기준금리 격차는 환율과 자본 흐름의 핵심 변수입니다.")
+    st.subheader("🌎 Global Macro Dashboard")
+    
+    # 국가별 탭 생성
+    countries = ["South Korea", "USA", "China", "Eurozone", "Germany", "UK", "Japan"]
+    m_tabs = st.tabs(countries)
 
-    with st.spinner('매크로 데이터를 분석 중...'):
-        # 한국 기준금리 (722Y001: 기준금리, 0101000: 한국은행 기준금리)
-        bok_policy = get_bok_data('722Y001', 'D', '0101000', 'BOK Rate')
+    # 1. FRED용 국가별 시리즈 코드 매핑 (기본 매크로 4종)
+    # GDP(YoY), CPI(YoY), Core CPI(YoY), Unemployment, Policy Rate
+    macro_codes = {
+        "USA": {
+            "GDP_YoY": "GDP", "CPI_YoY": "CPIAUCSL", "Core_CPI": "CPILFESL", 
+            "Unemployment": "UNRATE", "Rate": "FEDFUNDS"
+        },
+        "Eurozone": {
+            "GDP_YoY": "CLVMNACSCAB1GQEA", "CPI_YoY": "CP0000EZ19M086NEST", "Core_CPI": "CP0000EZ19M086NEST", 
+            "Unemployment": "LRHUTTTTEZM156S", "Rate": "ECBDFR"
+        },
+        "Germany": {
+            "GDP_YoY": "CLVMNACSCAB1GQDE", "CPI_YoY": "CP0000DEM086NEST", "Core_CPI": "CP0000DEM086NEST", 
+            "Unemployment": "LRHUTTTTDEM156S", "Rate": "ECBDFR" # ECB 금리 공유
+        },
+        "UK": {
+            "GDP_YoY": "UKNGDP", "CPI_YoY": "CP0000GBM086NEST", "Core_CPI": "CP0000GBM086NEST", 
+            "Unemployment": "LRHUTTTTGBM156S", "Rate": "INTDSRGBM193N"
+        },
+        "Japan": {
+            "GDP_YoY": "JPNNGDP", "CPI_YoY": "CP0000JPM086NEST", "Core_CPI": "CP0000JPM086NEST", 
+            "Unemployment": "LRHUTTTTJPM156S", "Rate": "INTDSRJPM193N"
+        },
+        "China": {
+            "GDP_YoY": "CHNGDPNQDSMEI", "CPI_YoY": "CHNCPIALLMINMEI", "Core_CPI": "CHNCPIALLMINMEI", 
+            "Unemployment": "CHNRURUNM", "Rate": "INTDSRCNM193N"
+        }
+    }
+
+    # 2. 공통 시각화 함수
+    def plot_macro_charts(df, country_name):
+        c1, c2 = st.columns(2)
         
-        # 미국 기준금리 (FRED: FEDFUNDS)
-        fed_policy = get_fred_data('FEDFUNDS')
-        
-        if not bok_policy.empty and not fed_policy.empty:
-            policy_df = pd.concat([bok_policy, fed_policy.rename(columns={'FEDFUNDS': 'Fed Rate'})], axis=1).ffill()
-            policy_df['Spread'] = policy_df['BOK Rate'] - policy_df['Fed Rate']
-            policy_df = policy_df.tail(days_to_show)
+        with c1:
+            # (1) GDP Growth (QoQ & YoY)
+            if 'GDP_YoY' in df.columns:
+                gdp_yoy = df['GDP_YoY'].pct_change(4) * 100 # 분기 데이터 기준 YoY
+                gdp_qoq = df['GDP_YoY'].pct_change(1) * 100 # QoQ
+                fig_gdp = go.Figure()
+                fig_gdp.add_trace(go.Bar(x=gdp_qoq.index, y=gdp_qoq, name="QoQ %", marker_color='rgba(150, 150, 150, 0.5)'))
+                fig_gdp.add_trace(go.Scatter(x=gdp_yoy.index, y=gdp_yoy, name="YoY %", line=dict(color='firebrick', width=3)))
+                fig_gdp.update_layout(title=f"{country_name} GDP Growth", height=350)
+                st.plotly_chart(apply_mobile_style(fig_gdp), use_container_width=True)
 
-            # 차트 1: 기준금리 비교 선 차트
-            fig_policy = go.Figure()
-            fig_policy.add_trace(go.Scatter(x=policy_df.index, y=policy_df['BOK Rate'], name="BOK Rate", line=dict(color='firebrick', width=3)))
-            fig_policy.add_trace(go.Scatter(x=policy_df.index, y=policy_df['Fed Rate'], name="Fed Rate", line=dict(color='royalblue', width=3, dash='dash')))
-            fig_policy.update_layout(title="BOK vs Fed Policy Rate Trend", template='plotly_white', hovermode='x unified')
-            st.plotly_chart(apply_mobile_style(fig_policy), use_container_width=True)
+            # (2) Inflation (CPI vs Core)
+            if 'CPI_YoY' in df.columns:
+                cpi_yoy = df['CPI_YoY'].pct_change(12) * 100
+                core_yoy = df['Core_CPI'].pct_change(12) * 100 if 'Core_CPI' in df.columns else None
+                fig_cpi = go.Figure()
+                fig_cpi.add_trace(go.Scatter(x=cpi_yoy.index, y=cpi_yoy, name="Headline CPI YoY", line=dict(color='royalblue', width=2)))
+                if core_yoy is not None:
+                    fig_cpi.add_trace(go.Scatter(x=core_yoy.index, y=core_yoy, name="Core CPI YoY", line=dict(color='orange', width=2, dash='dash')))
+                fig_cpi.update_layout(title=f"{country_name} Inflation", height=350)
+                st.plotly_chart(apply_mobile_style(fig_cpi), use_container_width=True)
 
-            # 차트 2: 금리차 (Spread) 막대 차트
-            fig_p_spread = go.Figure()
-            fig_p_spread.add_hline(y=0, line_dash="solid", line_color="black")
-            # 금리 역전(음수)일 때 빨간색으로 표시
-            colors = ['#EF553B' if x < 0 else '#636EFA' for x in policy_df['Spread']]
-            fig_p_spread.add_trace(go.Bar(x=policy_df.index, y=policy_df['Spread'], marker_color=colors, name="Spread (KR-US)"))
-            fig_p_spread.update_layout(title="Interest Rate Differential (KR - US)", template='plotly_white', yaxis_title="Basis Points / %")
-            st.plotly_chart(apply_mobile_style(fig_p_spread), use_container_width=True)
-        else:
-            st.warning("정책 금리 데이터를 불러올 수 없습니다. API 설정을 확인하세요.")
+        with c2:
+            # (3) Jobless Rate
+            if 'Unemployment' in df.columns:
+                fig_job = go.Figure()
+                fig_job.add_trace(go.Scatter(x=df.index, y=df['Unemployment'], name="Unemployment Rate", fill='tozeroy', line=dict(color='gray')))
+                fig_job.update_layout(title=f"{country_name} Jobless Rate (%)", height=350)
+                st.plotly_chart(apply_mobile_style(fig_job), use_container_width=True)
 
+            # (4) Central Bank Policy Rate
+            if 'Rate' in df.columns:
+                fig_rate = go.Figure()
+                fig_rate.add_trace(go.Scatter(x=df.index, y=df['Rate'], name="Policy Rate", line=dict(color='black', width=3), shape='hv'))
+                fig_rate.update_layout(title=f"{country_name} Policy Rate (%)", height=350)
+                st.plotly_chart(apply_mobile_style(fig_rate), use_container_width=True)
 
+    # 3. 각 탭별 로직 실행
+    for i, country in enumerate(countries):
+        with m_tabs[i]:
+            if country == "South Korea":
+                # 한국 전용 로직 (BOK ECOS 호출)
+                with st.spinner('한국 매크로 데이터 수집 중...'):
+                    # GDP(200Y005), CPI(901Y009), 실업률(901Y053), 기준금리(722Y001)
+                    kr_gdp = get_bok_data('200Y005', 'Q', '10101', 'GDP_YoY') # 실질GDP
+                    kr_cpi = get_bok_data('901Y009', 'M', '0', 'CPI_YoY')
+                    kr_job = get_bok_data('901Y053', 'M', '0', 'Unemployment')
+                    kr_rate = get_bok_data('722Y001', 'D', '0101000', 'Rate')
+                    
+                    kr_macro = pd.concat([kr_gdp, kr_cpi, kr_job, kr_rate], axis=1).ffill().tail(days_to_show)
+                    plot_macro_charts(kr_macro, "Korea")
+            else:
+                # 해외 국가 전용 로직 (FRED 호출)
+                with st.spinner(f'{country} 매크로 데이터 수집 중...'):
+                    codes = macro_codes.get(country)
+                    series_list = []
+                    for label, code in codes.items():
+                        s = get_fred_data(code).rename(columns={code: label})
+                        if not s.empty: series_list.append(s)
+                    
+                    if series_list:
+                        country_df = pd.concat(series_list, axis=1).ffill().tail(days_to_show)
+                        plot_macro_charts(country_df, country)
+                    else:
+                        st.error(f"{country} 데이터를 불러오지 못했습니다.")

@@ -4,7 +4,7 @@ import yfinance as yf
 from fredapi import Fred
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 import requests
 

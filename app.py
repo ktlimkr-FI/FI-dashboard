@@ -633,7 +633,19 @@ with tab6:
 
     except Exception as e:
         st.error(f"데이터 로드 및 분석 실패: {e}")
-        
+
+# --- 탭 7: KR Yield Curve 상세 분석 (BoK API 활용) ---
+with tab7:
+    st.subheader("🇰🇷 KR Treasury Yield Curve Analysis")
+    st.caption("한국은행(BoK) 공식 데이터를 활용하여 국고채 만기별 수익률 곡선을 분석합니다.")
+
+    # 1. 국고채 만기별 코드 정의 (통계표 817Y002)
+    kr_maturities = {
+        '1Y': '010190000', '2Y': '010200010', '3Y': '010200000', 
+        '5Y': '010210000', '10Y': '010220000', '20Y': '010230000', 
+        '30Y': '010240000', '50Y': '010250000'
+    }
+
 @st.cache_data(ttl=3600)
 def get_bok_data(stat_code, cycle, item_code, column_name):
     # 전역 변수 BOK_API_KEY를 명시적으로 사용

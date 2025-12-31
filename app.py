@@ -63,6 +63,26 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
+def apply_mobile_style(fig):
+    """모든 Plotly 차트에 모바일 최적화 스타일(범례 하단 등)을 적용합니다."""
+    fig.update_layout(
+        legend=dict(
+            orientation="h",
+            yanchor="top",
+            y=-0.25,
+            xanchor="center",
+            x=0.5,
+            font=dict(size=10)
+        ),
+        margin=dict(l=10, r=10, t=50, b=80), # 좌우 여백 줄이고 하단 확보
+        hovermode="x unified"
+    )
+    return fig
+
+# 사용 예시:
+# fig = go.Figure(...)
+# st.plotly_chart(apply_mobile_style(fig), use_container_width=True)
+
 # --- 4. 데이터 로드 함수들 (통합 및 최적화) ---
 
 # [1] FRED 데이터 로더
@@ -193,7 +213,7 @@ with tab1:
         fig1 = go.Figure()
         fig1.add_trace(go.Scatter(x=repo_df.index, y=repo_df['RPONTTLD'], mode='lines', fill='tozeroy', line=dict(color='royalblue', width=2)))
         fig1.update_layout(title="Daily Repo Volume Trend", template='plotly_white', height=350)
-        st.plotly_chart(fig1, use_container_width=True)
+        st.plotly_chart(apply_mobile_style(fig1), use_container_width=True)
 
     st.subheader("2. SOFR Market Stress (SOFR99th - SOFR)")
     st.caption("상위 1% 금리와 중앙값의 차이입니다. 급등할수록 자금 조달에 어려움을 겪는 기관이 많음을 뜻합니다.")
@@ -212,7 +232,7 @@ with tab1:
             fill='tozeroy', name="Spread (99th-Median)"
         ))
         fig_spread.update_layout(title="SOFR Spread Trend", template='plotly_white', height=350, yaxis_title="Percent (%)")
-        st.plotly_chart(fig_spread, use_container_width=True)
+        st.plotly_chart(apply_mobile_style(fig_spread), use_container_width=True)
 
     st.divider()
     st.subheader("3. 🗓️ SOFR 월간 계절성 분석 (10년 평균)")
@@ -235,7 +255,7 @@ with tab1:
     )
     fig_season.update_yaxes(title_text="Interest Rate (%)", secondary_y=False)
     fig_season.update_yaxes(title_text="Spread (%)", secondary_y=True)
-    st.plotly_chart(fig_season, use_container_width=True)
+    st.plotly_chart(apply_mobile_style(fig_season), use_container_width=True)
 
 # --- 탭 2: 금리 분석 & 정책 이탈도(Deviation) 분석 ---
 with tab2:
@@ -266,7 +286,7 @@ with tab2:
         fig2.add_trace(go.Scatter(x=r_df.index, y=r_df['SOFR99'], name='SOFR 99th', line=dict(color='orange', width=1.5, dash='dot')))
         
         fig2.update_layout(title="SOFR & Target Range Trend", template='plotly_white', hovermode='x unified', yaxis_title="Percent (%)")
-        st.plotly_chart(fig2, use_container_width=True)
+        st.plotly_chart(apply_mobile_style(fig2), use_container_width=True)
 
         st.divider()
 
@@ -306,7 +326,7 @@ with tab2:
         # Y축 단위를 %로 표시하기 위한 설정
         fig_diff.update_yaxes(ticksuffix="%")
         
-        st.plotly_chart(fig_diff, use_container_width=True)
+        st.plotly_chart(apply_mobile_style(fig_diff), use_container_width=True)
         
         st.success("""
         💡 **분석 팁:**
@@ -365,7 +385,7 @@ with tab3:
 
         fig3.update_layout(template='plotly_white', hovermode='x unified', height=400,
                           legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
-        st.plotly_chart(fig3, use_container_width=True)
+        st.plotly_chart(apply_mobile_style(fig3), use_container_width=True)
 
         st.divider()
 
@@ -430,7 +450,7 @@ with tab4:
     for s in selected_symbols:
         fig4.add_trace(go.Scatter(x=target_df.index, y=target_df[s], name=s))
     fig4.update_layout(title=f"통합 환율 ({view_mode})", template='plotly_white', hovermode='x unified')
-    st.plotly_chart(fig4, use_container_width=True)
+    st.plotly_chart(apply_mobile_style(fig4), use_container_width=True)
     
     st.write("### 개별 상세 차트 (절대 가격)")
     cols = st.columns(2)
@@ -438,7 +458,7 @@ with tab4:
         with cols[i % 2]:
             fig_i = go.Figure(go.Scatter(x=yf_raw.index, y=yf_raw[s], name=s, line=dict(color='royalblue')))
             fig_i.update_layout(title=s, height=250, margin=dict(l=0,r=0,t=30,b=0), template='plotly_white')
-            st.plotly_chart(fig_i, use_container_width=True)
+            st.plotly_chart(apply_mobile_style(fig_i), use_container_width=True)
 
 # --- 탭 5: Repo Fails (조회 기간 연동 및 계절성 분석) ---
 with tab5:
@@ -459,22 +479,8 @@ with tab5:
                     x=fails_display.index, y=fails_display[col], 
                     mode='lines', stackgroup='one', name=col
                 ))
-#            fig_stacked.update_layout(template='plotly_white', height=400, yaxis_title="$M", hovermode='x unified')
-            fig_stacked.update_layout(
-                template='plotly_white', 
-                height=400, 
-                yaxis_title="$M", 
-                hovermode='x unified',
-    # --- 범례 설정 추가 ---
-                legend=dict(
-                    orientation="h",    # 가로 방향으로 배치
-                    yanchor="top",      # 기준점을 상단으로
-                    y=-0.2,             # 차트 아래쪽 위치 (음수값으로 조절)
-                    xanchor="center",   # 가로 기준점을 중앙으로
-                    x=0.5               # 중앙 배치
-                 )
-            )
-            st.plotly_chart(fig_stacked, use_container_width=True)
+            fig_stacked.update_layout(template='plotly_white', height=400, yaxis_title="$M", hovermode='x unified')
+            st.plotly_chart(apply_mobile_style(fig_stacked), use_container_width=True)
             
         with col2:
             st.write(f"### UST Fails ({selected_label})")
@@ -484,7 +490,7 @@ with tab5:
                 fill='tozeroy', line=dict(color='firebrick'), name="UST Fails"
             ))
             fig_ust.update_layout(template='plotly_white', height=400, yaxis_title="$M", hovermode='x unified')
-            st.plotly_chart(fig_ust, use_container_width=True)
+            st.plotly_chart(apply_mobile_style(fig_ust), use_container_width=True)
 
         st.divider()
 
@@ -526,7 +532,7 @@ with tab5:
             ))
             fig_detrended.add_hline(y=0, line_dash="dash", line_color="grey")
             fig_detrended.update_layout(template='plotly_white', height=400, showlegend=False)
-            st.plotly_chart(fig_detrended, use_container_width=True)
+            st.plotly_chart(apply_mobile_style(fig_detrended), use_container_width=True)
 
         with c2:
             st.write("### 2. 10년 주간 평균 계절성 (전체 기간)")
@@ -553,7 +559,7 @@ with tab5:
                 xaxis_title="주차 (Week)", yaxis_title="편차",
                 showlegend=False
             )
-            st.plotly_chart(fig_seasonal, use_container_width=True)
+            st.plotly_chart(apply_mobile_style(fig_seasonal), use_container_width=True)
 
         st.success("💡 **분석 가이드:** 음영 구역(연말) 내에서 '편차'가 플러스로 튀는 현상은 해당 시기에 정기적으로 결제 실패가 급증함을 의미합니다.")
 
@@ -627,7 +633,7 @@ with tab6:
             
             fig_corr.update_layout(template='plotly_white', height=500, hovermode='x unified',
                                   xaxis_range=[dxy_price.index.min(), dxy_price.index.max()])
-            st.plotly_chart(fig_corr, use_container_width=True)
+            st.plotly_chart(apply_mobile_style(fig_corr), use_container_width=True)
 
         st.divider()
 
@@ -655,7 +661,7 @@ with tab6:
             fig_pie = go.Figure(data=[go.Pie(labels=pie_data['Clean_Name'], values=pie_data[latest_yr], hole=.4,
                                             text=display_text, textinfo='text+percent', textposition='outside', automargin=True)])
             fig_pie.update_layout(height=550, showlegend=False)
-            st.plotly_chart(fig_pie, use_container_width=True)
+            st.plotly_chart(apply_mobile_style(fig_pie), use_container_width=True)
 
         with c2:
             st.write(f"#### 📈 {idx_choice} 비중 추이")
@@ -664,7 +670,7 @@ with tab6:
             for curr in pie_data.head(10)['Clean_Name'].tolist():
                 fig_trend.add_trace(go.Scatter(x=trend_df.index, y=trend_df[curr], mode='lines', stackgroup='one', name=curr))
             fig_trend.update_layout(height=450, yaxis_title="Weight (%)")
-            st.plotly_chart(fig_trend, use_container_width=True)
+            st.plotly_chart(apply_mobile_style(fig_trend), use_container_width=True)
 
         # 5. AFE vs EME 그룹 합산 분석
         st.divider()
@@ -683,7 +689,7 @@ with tab6:
             fig_group_pie = go.Figure(data=[go.Pie(labels=latest_group_val.index, values=latest_group_val.values, hole=.4,
                                                  marker_colors=['#636EFA', '#EF553B'], textinfo='label+percent', textposition='outside')])
             fig_group_pie.update_layout(height=400, showlegend=False)
-            st.plotly_chart(fig_group_pie, use_container_width=True)
+            st.plotly_chart(apply_mobile_style(fig_group_pie), use_container_width=True)
 
         with c2_sub:
             st.write("#### 📈 그룹별 비중 시계열 추이")
@@ -698,7 +704,7 @@ with tab6:
                     fillcolor=f'rgba{tuple(list(int(color.lstrip("#")[i:i+2], 16) for i in (0, 2, 4)) + [0.5])}'
                 ))
             fig_group_trend.update_layout(template='plotly_white', height=400, yaxis_title="Weight (%)", hovermode='x unified')
-            st.plotly_chart(fig_group_trend, use_container_width=True)
+            st.plotly_chart(apply_mobile_style(fig_group_trend), use_container_width=True)
 
     except Exception as e:
         st.error(f"데이터 로드 및 분석 실패: {e}")
@@ -789,7 +795,7 @@ with tab7:
                 fig_2y.add_vline(x=switch_date, line_dash="dash", line_color="red", annotation_text="KTB 2Y 시작점")
             
             fig_2y.update_layout(template='plotly_white', height=400)
-            st.plotly_chart(fig_2y, use_container_width=True)
+            st.plotly_chart(apply_mobile_style(fig_2y), use_container_width=True)
         else:
             st.warning("⚠️ 2년물(2Y) 데이터를 구성하지 못했습니다.")
 
@@ -804,7 +810,7 @@ with tab7:
         fig_curve = go.Figure()
         fig_curve.add_trace(go.Scatter(x=x_labels, y=y_vals, mode='lines+markers', line=dict(color='firebrick', width=4)))
         fig_curve.update_layout(template='plotly_white', height=500, yaxis_title="Yield (%)")
-        st.plotly_chart(fig_curve, use_container_width=True)
+        st.plotly_chart(apply_mobile_style(fig_curve), use_container_width=True)
     else:
         st.error("데이터 로드에 실패했습니다. API 키와 네트워크를 확인하세요.")
         
@@ -830,7 +836,7 @@ with tab8:
             fig_policy.add_trace(go.Scatter(x=policy_df.index, y=policy_df['BOK Rate'], name="BOK Rate", line=dict(color='firebrick', width=3)))
             fig_policy.add_trace(go.Scatter(x=policy_df.index, y=policy_df['Fed Rate'], name="Fed Rate", line=dict(color='royalblue', width=3, dash='dash')))
             fig_policy.update_layout(title="BOK vs Fed Policy Rate Trend", template='plotly_white', hovermode='x unified')
-            st.plotly_chart(fig_policy, use_container_width=True)
+            st.plotly_chart(apply_mobile_style(fig_policy), use_container_width=True)
 
             # 차트 2: 금리차 (Spread) 막대 차트
             fig_p_spread = go.Figure()
@@ -839,6 +845,6 @@ with tab8:
             colors = ['#EF553B' if x < 0 else '#636EFA' for x in policy_df['Spread']]
             fig_p_spread.add_trace(go.Bar(x=policy_df.index, y=policy_df['Spread'], marker_color=colors, name="Spread (KR-US)"))
             fig_p_spread.update_layout(title="Interest Rate Differential (KR - US)", template='plotly_white', yaxis_title="Basis Points / %")
-            st.plotly_chart(fig_p_spread, use_container_width=True)
+            st.plotly_chart(apply_mobile_style(fig_p_spread), use_container_width=True)
         else:
             st.warning("정책 금리 데이터를 불러올 수 없습니다. API 설정을 확인하세요.")

@@ -634,80 +634,48 @@ with tab6:
     except Exception as e:
         st.error(f"데이터 로드 및 분석 실패: {e}")
         
-# --- 탭 7: KR Yield Curve 상세 분석 (BoK API 활용) ---
-with tab7:
-    st.subheader("🇰🇷 KR Treasury Yield Curve Analysis")
-    st.caption("한국은행(BoK) 공식 데이터를 활용하여 국고채 만기별 수익률 곡선을 분석합니다.")
+@st.cache_data(ttl=3600)
+def get_bok_data(stat_code, cycle, item_code, column_name):
+    # 전역 변수 BOK_API_KEY를 명시적으로 사용
+    global BOK_API_KEY 
+    
+    if not BOK_API_KEY:
+        st.error("❌ BOK_API_KEY가 설정되지 않았습니다.")
+        return pd.DataFrame()
 
-    # 1. 국고채 만기별 코드 정의 (통계표 817Y002)
-    kr_maturities = {
-        '1Y': '010190000', '2Y': '010200010', '3Y': '010200000', 
-        '5Y': '010210000', '10Y': '010220000', '20Y': '010230000', 
-        '30Y': '010240000', '50Y': '010250000'
-    }
-
-    @st.cache_data(ttl=3600)
-    def get_full_kr_yield_curve():
-        all_frames = []
-        for label, code in kr_maturities.items():
-            df = get_bok_data('817Y002', 'D', code, label)
-            if not df.empty:
-                all_frames.append(df)
-        return pd.concat(all_frames, axis=1).sort_index().ffill() if all_frames else pd.DataFrame()
-
-    with st.spinner('한국 국채 데이터를 로드 중...'):
-        kr_curve_data = get_full_kr_yield_curve()
-
-    if not kr_curve_data.empty:
-        # 2. 수익률 곡선 비교 (현재 vs 1달 전 vs 1년 전)
-        st.write("### 1. Yield Curve Comparison")
+    start_date = (datetime.now() - pd.Timedelta(days=4000)).strftime('%Y%m%d')
+    end_date = datetime.now().strftime('%Y%m%d')
+    
+    # URL 구조 재확인 (항목 코드가 마지막에 위치)
+    url = f"http://ecos.bok.or.kr/api/StatisticSearch/{BOK_API_KEY}/json/kr/1/10000/{stat_code}/{cycle}/{start_date}/{end_date}/{item_code}"
+    
+    try:
+        resp = requests.get(url, timeout=10)
+        data = resp.json()
         
-        latest_date = kr_curve_data.index[-1]
-        one_month_ago = kr_curve_data.index[kr_curve_data.index <= (latest_date - pd.DateOffset(months=1))][-1]
-        one_year_ago = kr_curve_data.index[kr_curve_data.index <= (latest_date - pd.DateOffset(years=1))][-1]
-
-        fig_curve = go.Figure()
+        # 1. 한국은행 API 에러 메시지 확인 (가장 중요)
+        if 'RESULT' in data:
+            if data['RESULT']['CODE'] != 'INFO-000': # 성공 코드가 아닐 경우
+                st.warning(f"🔔 BOK API 알림 ({column_name}): {data['RESULT']['MESSAGE']}")
+                return pd.DataFrame()
         
-        # 현재 곡선
-        fig_curve.add_trace(go.Scatter(x=list(kr_maturities.keys()), y=kr_curve_data.loc[latest_date],
-                                     mode='lines+markers', name=f'Current ({latest_date.date()})',
-                                     line=dict(color='firebrick', width=4)))
-        # 1달 전 곡선
-        fig_curve.add_trace(go.Scatter(x=list(kr_maturities.keys()), y=kr_curve_data.loc[one_month_ago],
-                                     mode='lines+markers', name=f'1 Month Ago',
-                                     line=dict(color='rgba(255, 100, 100, 0.5)', dash='dot')))
-        # 1년 전 곡선
-        fig_curve.add_trace(go.Scatter(x=list(kr_maturities.keys()), y=kr_curve_data.loc[one_year_ago],
-                                     mode='lines+markers', name=f'1 Year Ago',
-                                     line=dict(color='grey', dash='dash')))
-
-        fig_curve.update_layout(template='plotly_white', height=500, yaxis_title="Yield (%)",
-                               xaxis_title="Maturity", hovermode='x unified')
-        st.plotly_chart(fig_curve, use_container_width=True)
-
-        st.divider()
-
-        # 3. 주요 금리 스프레드 추이
-        st.write("### 2. Key Yield Spreads")
-        spread_10y3y = (kr_curve_data['10Y'] - kr_curve_data['3Y']).tail(days_to_show)
-        spread_30y10y = (kr_curve_data['30Y'] - kr_curve_data['10Y']).tail(days_to_show)
-
-        fig_spreads = go.Figure()
-        fig_spreads.add_hline(y=0, line_dash="solid", line_color="black")
-        fig_spreads.add_trace(go.Scatter(x=spread_10y3y.index, y=spread_10y3y, name="10Y - 3Y (장단기)", line=dict(color='royalblue')))
-        fig_spreads.add_trace(go.Scatter(x=spread_30y10y.index, y=spread_30y10y, name="30Y - 10Y (초장기)", line=dict(color='forestgreen')))
-        
-        fig_spreads.update_layout(template='plotly_white', height=400, yaxis_title="Spread (%)", hovermode='x unified')
-        st.plotly_chart(fig_spreads, use_container_width=True)
-
-        st.info("""
-        💡 **Yield Curve 분석 가이드:**
-        * **Curve Flattening**: 장단기 금리차가 줄어드는 현상. 향후 경기 둔화 우려를 반영합니다.
-        * **Curve Steepening**: 장단기 금리차가 커지는 현상. 경기 회복세 및 인플레이션 기대감을 반영합니다.
-        * **장단기 역전**: 단기 금리가 장기 금리보다 높아지는 현상으로, 강력한 경기 침체 신호로 해석됩니다.
-        """)
-    else:
-        st.error("데이터를 불러오지 못했습니다. BOK_API_KEY와 통계 코드를 확인해 주세요.")
+        # 2. 정상 데이터 파싱
+        if 'StatisticSearch' in data:
+            rows = data['StatisticSearch']['row']
+            df = pd.DataFrame(rows)
+            
+            if cycle == 'D':
+                df['date'] = pd.to_datetime(df['TIME'])
+            else:
+                df['date'] = pd.to_datetime(df['TIME'].str[:4] + "-" + df['TIME'].str[4:6] + "-01")
+            
+            df['value'] = pd.to_numeric(df['DATA_VALUE'])
+            return df[['date', 'value']].rename(columns={'value': column_name}).set_index('date')
+            
+    except Exception as e:
+        st.error(f"⚠️ 연결 오류 ({column_name}): {str(e)}")
+    
+    return pd.DataFrame()
 
 # --- 탭 8: Macro Indicators (한-미 기준금리 역전 분석) ---
 with tab8:

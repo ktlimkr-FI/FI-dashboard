@@ -202,7 +202,7 @@ def get_bok_data(stat_code, cycle, item_code, column_name):
 
 # 5. 탭 구성
 tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
-    "📊 Repo 흐름", "💸 금리 분석", "🌐 유동성&달러", "💹 환율(Yahoo)", "⚠️ Repo Fails (OFR)", "⚠️ Dollar Index Weight", "⚠️ Yield Curve(US&KR)", "⚠️ 한미 기준금리 역전 분석"
+    "📊 Repo 흐름", "💸 금리 분석", "🌐 유동성&달러", "💹 환율(Yahoo)", "⚠️ Repo Fails (OFR)", "⚠️ Dollar Index Weight", "⚠️ Yield Curve(US&KR)", "⚠️ Global Macro"
 ])
 
 # --- 탭 1: Repo 흐름 & SOFR Spread 분석 ---

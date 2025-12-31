@@ -801,84 +801,79 @@ with tab7:
 
         st.divider()
 
-# --- [수정 섹션] 2. Yield Spread Matrix (정책 금리 맥락 추가) ---
-        st.write("### 📈 2. Yield Spread Matrix with Policy Context")
+# --- [최종 수정] 2. Yield Spread Matrix (좌: 기준금리 / 우: 스프레드) ---
+        st.write("### 📈 2. Yield Spread Matrix (Policy Context Focused)")
         
         t1, t2, t3 = st.tabs(["구간별 스프레드 (Slope)", "기준금리 대비 스프레드", "2Y 하이브리드 점검"])
         
         with t1:
-            st.write("#### 🔍 구간별 커브 기울기 vs 기준금리")
-            # 보조 축을 사용하기 위해 make_subplots 적용
+            st.write("#### 🔍 구간별 커브 기울기 (좌: 기준금리 / 우: 스프레드)")
             fig_slope = make_subplots(specs=[[{"secondary_y": True}]])
             
-            pairs = [('2Y', '1Y'), ('3Y', '2Y'), ('5Y', '3Y'), ('10Y', '5Y'), ('30Y', '10Y')]
+            # (A) [왼쪽 축] 한국은행 기준금리 - 정책 맥락의 바탕
+            if 'KR_BaseRate' in df_kr.columns:
+                fig_slope.add_trace(
+                    go.Scatter(x=df_kr.index, y=df_kr['KR_BaseRate'].tail(days_to_show), 
+                               name="기준금리 (L)", 
+                               line=dict(color='rgba(0,0,0,0.3)', width=2),
+                               fill='tozeroy', fillcolor='rgba(200,200,200,0.1)'), # 연한 바탕색
+                    secondary_y=False
+                )
             
-            # (A) 왼쪽 축: 구간별 스프레드
+            # (B) [오른쪽 축] 구간별 스프레드들
+            pairs = [('2Y', '1Y'), ('3Y', '2Y'), ('5Y', '3Y'), ('10Y', '5Y'), ('30Y', '10Y')]
             for long_m, short_m in pairs:
                 if long_m in df_kr.columns and short_m in df_kr.columns:
                     slope = (df_kr[long_m] - df_kr[short_m]).tail(days_to_show)
                     fig_slope.add_trace(
-                        go.Scatter(x=slope.index, y=slope, name=f"{long_m}-{short_m} (L)"),
-                        secondary_y=False
+                        go.Scatter(x=slope.index, y=slope, name=f"{long_m}-{short_m} (R)"),
+                        secondary_y=True
                     )
             
-            # (B) 오른쪽 축: 한국은행 기준금리
-            if 'KR_BaseRate' in df_kr.columns:
-                fig_slope.add_trace(
-                    go.Scatter(x=df_kr.index, y=df_kr['KR_BaseRate'].tail(days_to_show), 
-                               name="기준금리 (R)", 
-                               line=dict(color='black', width=3, dash='dot'),
-                               opacity=0.5),
-                    secondary_y=True
-                )
-            
-            fig_slope.add_hline(y=0, line_dash="dash", line_color="gray", secondary_y=False)
-            fig_slope.update_layout(height=500, hovermode='x unified')
-            fig_slope.update_yaxes(title_text="Spread (%p)", secondary_y=False)
-            fig_slope.update_yaxes(title_text="Policy Rate (%)", secondary_y=True)
+            fig_slope.add_hline(y=0, line_dash="dash", line_color="gray", secondary_y=True)
+            fig_slope.update_layout(height=500, hovermode='x unified', legend=dict(orientation="h", y=-0.2))
+            fig_slope.update_yaxes(title_text="<b>Base Rate (%)</b>", secondary_y=False)
+            fig_slope.update_yaxes(title_text="Spread (%p)", secondary_y=True)
             st.plotly_chart(apply_mobile_style(fig_slope), use_container_width=True)
 
         with t2:
-            st.write("#### 🏛️ 만기별 프리미엄 vs 기준금리")
+            st.write("#### 🏛️ 만기별 프리미엄/디스카운트 (좌: 기준금리 / 우: 스프레드)")
             fig_base_ctx = make_subplots(specs=[[{"secondary_y": True}]])
             
             if 'KR_BaseRate' in df_kr.columns:
-                targets = ['1Y', '2Y', '3Y', '5Y', '10Y', '30Y']
+                # (A) [왼쪽 축] 기준금리 수준
+                fig_base_ctx.add_trace(
+                    go.Scatter(x=df_kr.index, y=df_kr['KR_BaseRate'].tail(days_to_show), 
+                               name="기준금리 (L)", 
+                               line=dict(color='black', width=3),
+                               opacity=0.4),
+                    secondary_y=False
+                )
                 
-                # (A) 왼쪽 축: 기준금리 대비 스프레드
+                # (B) [오른쪽 축] 만기별 금리 - 기준금리 (스프레드)
+                targets = ['1Y', '2Y', '3Y', '5Y', '10Y', '30Y']
                 for m in targets:
                     if m in df_kr.columns:
                         diff = (df_kr[m] - df_kr['KR_BaseRate']).tail(days_to_show)
                         fig_base_ctx.add_trace(
-                            go.Scatter(x=diff.index, y=diff, name=f"{m}-Base (L)"),
-                            secondary_y=False
+                            go.Scatter(x=diff.index, y=diff, name=f"{m}-Base (R)"),
+                            secondary_y=True
                         )
                 
-                # (B) 오른쪽 축: 기준금리 절대 수준
-                fig_base_ctx.add_trace(
-                    go.Scatter(x=df_kr.index, y=df_kr['KR_BaseRate'].tail(days_to_show), 
-                               name="기준금리 수준 (R)", 
-                               line=dict(color='black', width=3),
-                               fill='tozeroy', fillcolor='rgba(0,0,0,0.05)'),
-                    secondary_y=True
-                )
-                
-                fig_base_ctx.add_hline(y=0, line_dash="solid", line_color="black", secondary_y=False)
-                fig_base_ctx.update_layout(height=500, hovermode='x unified')
-                fig_base_ctx.update_yaxes(title_text="Premium / Discount (%p)", secondary_y=False)
-                fig_base_ctx.update_yaxes(title_text="Base Rate (%)", secondary_y=True)
+                fig_base_ctx.add_hline(y=0, line_dash="solid", line_color="black", secondary_y=True)
+                fig_base_ctx.update_layout(height=500, hovermode='x unified', legend=dict(orientation="h", y=-0.2))
+                fig_base_ctx.update_yaxes(title_text="<b>Base Rate (%)</b>", secondary_y=False)
+                fig_base_ctx.update_yaxes(title_text="Premium / Discount (%p)", secondary_y=True)
                 st.plotly_chart(apply_mobile_style(fig_base_ctx), use_container_width=True)
-            else:
-                st.warning("⚠️ 기준금리 데이터를 불러오지 못했습니다.")
 
         with t3:
-            # (2Y 하이브리드 점검 로직은 기존과 동일)
+            # 2Y 하이브리드 점검 (기존 로직 유지)
             if '2Y' in df_kr.columns:
                 st.write("#### 2Y 하이브리드 시계열 및 전환점 확인")
                 fig_2y = go.Figure()
                 fig_2y.add_trace(go.Scatter(x=df_kr.index, y=df_kr['2Y'], name="2Y Hybrid"))
                 if switch_date:
-                    fig_2y.add_vline(x=switch_date, line_dash="dash", line_color="red", annotation_text="KTB 2Y 시작")
+                    fig_2y.add_vline(x=switch_date, line_dash="dash", line_color="red", annotation_text="KTB 시작")
                 st.plotly_chart(apply_mobile_style(fig_2y), use_container_width=True)
         
 # --- 탭 8: Macro Indicators (한-미 기준금리 역전 분석) ---

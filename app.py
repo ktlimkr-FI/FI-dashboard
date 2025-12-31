@@ -429,7 +429,21 @@ with tab5:
                     x=fails_display.index, y=fails_display[col], 
                     mode='lines', stackgroup='one', name=col
                 ))
-            fig_stacked.update_layout(template='plotly_white', height=400, yaxis_title="$M", hovermode='x unified')
+#            fig_stacked.update_layout(template='plotly_white', height=400, yaxis_title="$M", hovermode='x unified')
+            fig_stacked.update_layout(
+                template='plotly_white', 
+                height=400, 
+                yaxis_title="$M", 
+                hovermode='x unified',
+    # --- 범례 설정 추가 ---
+                legend=dict(
+                    orientation="h",    # 가로 방향으로 배치
+                    yanchor="top",      # 기준점을 상단으로
+                    y=-0.2,             # 차트 아래쪽 위치 (음수값으로 조절)
+                    xanchor="center",   # 가로 기준점을 중앙으로
+                    x=0.5               # 중앙 배치
+                 )
+            )
             st.plotly_chart(fig_stacked, use_container_width=True)
             
         with col2:

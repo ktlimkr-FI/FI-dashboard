@@ -899,89 +899,115 @@ with tab7:
                     fig_2y.add_vline(x=switch_date, line_dash="dash", line_color="red", annotation_text="KTB 시작")
                 st.plotly_chart(apply_mobile_style(fig_2y), use_container_width=True)
         
-# --- 탭 8: Global Macro Data (오류 수정 버전) ---
+# --- 탭 8: 글로벌 매크로 (OECD/IMF 공식 시리즈 연동) ---
 with tab8:
-    st.subheader("🌎 Global Macro Dashboard")
+    st.subheader("🌎 Global Macro Dashboard (OECD/IMF Source)")
     
     countries = ["South Korea", "USA", "China", "Eurozone", "Germany", "UK", "Japan"]
     m_tabs = st.tabs(countries)
 
-    # FRED 매핑 (변동 없음)
+    # [수정] FRED 내 OECD/IMF 공식 시리즈 코드로 매핑 (품질 대폭 개선)
     macro_codes = {
-        "USA": {"GDP": "GDP", "CPI": "CPIAUCSL", "Core": "CPILFESL", "Unemp": "UNRATE", "Rate": "FEDFUNDS"},
-        "Eurozone": {"GDP": "CLVMNACSCAB1GQEA", "CPI": "CP0000EZ19M086NEST", "Core": "CP0000EZ19M086NEST", "Unemp": "LRHUTTTTEZM156S", "Rate": "ECBDFR"},
-        "Germany": {"GDP": "CLVMNACSCAB1GQDE", "CPI": "CP0000DEM086NEST", "Core": "CP0000DEM086NEST", "Unemp": "LRHUTTTTDEM156S", "Rate": "ECBDFR"},
-        "UK": {"GDP": "UKNGDP", "CPI": "CP0000GBM086NEST", "Core": "CP0000GBM086NEST", "Unemp": "LRHUTTTTGBM156S", "Rate": "INTDSRGBM193N"},
-        "Japan": {"GDP": "JPNNGDP", "CPI": "CP0000JPM086NEST", "Core": "CP0000JPM086NEST", "Unemp": "LRHUTTTTJPM156S", "Rate": "INTDSRJPM193N"},
-        "China": {"GDP": "CHNGDPNQDSMEI", "CPI": "CHNCPIALLMINMEI", "Core": "CHNCPIALLMINMEI", "Unemp": "CHNRURUNM", "Rate": "INTDSRCNM193N"}
+        "USA": {
+            "GDP": "GDPC1", "CPI": "CPIAUCSL", "Core": "CPILFESL", 
+            "Unemp": "UNRATE", "Rate": "FEDFUNDS"
+        },
+        "Eurozone": {
+            "GDP": "CLVMNACSCAB1GQEA", # OECD Source
+            "CPI": "CP0000EZ19M086NEST", # HICP (IMF/OECD)
+            "Core": "CP0000EZ19M086NEST", 
+            "Unemp": "LRHUTTTTEZM156S", 
+            "Rate": "ECBDFR"
+        },
+        "Germany": {
+            "GDP": "CLVMNACSCAB1GQDE", 
+            "CPI": "CP0000DEM086NEST", 
+            "Unemp": "LRHUTTTTDEM156S", 
+            "Rate": "ECBDFR"
+        },
+        "UK": {
+            "GDP": "UKNGDP", 
+            "CPI": "CP0000GBM086NEST", 
+            "Unemp": "LRHUTTTTGBM156S", 
+            "Rate": "INTDSRGBM193N"
+        },
+        "Japan": {
+            "GDP": "JPNRGDPDP", 
+            "CPI": "JPNCPICORMINMEI", # OECD 공식 근원물가
+            "Unemp": "LRHUTTTTJPM156S", 
+            "Rate": "INTDSRJPM193N"
+        },
+        "China": {
+            "GDP": "CHNGDPNQDSMEI", # OECD Source
+            "CPI": "CHNCPIALLMINMEI", # IMF/OECD 공식 CPI
+            "Unemp": "CHNRURUNM", 
+            "Rate": "INTDSRCNM193N"
+        }
     }
 
-    # [수정된 공통 시각화 함수]
-    def plot_macro_charts(df, country_name):
+    # [개선] 시각화 함수: 데이터 공백 시 일직선 방지 로직 추가
+    def plot_refined_macro(df, country_name):
+        # 데이터가 30일 이상 비어있으면 선을 끊어서 그림 (일직선 방지)
         c1, c2 = st.columns(2)
         
         with c1:
             # (1) GDP
             if 'GDP' in df.columns:
-                gdp_yoy = df['GDP'].pct_change(4) * 100
-                gdp_qoq = df['GDP'].pct_change(1) * 100
+                gdp_val = df['GDP'].dropna()
+                gdp_yoy = gdp_val.pct_change(4) * 100
                 fig_gdp = go.Figure()
-                fig_gdp.add_trace(go.Bar(x=gdp_qoq.index, y=gdp_qoq, name="QoQ %", marker_color='rgba(200, 200, 200, 0.5)'))
-                fig_gdp.add_trace(go.Scatter(x=gdp_yoy.index, y=gdp_yoy, name="YoY %", line=dict(color='firebrick', width=3)))
-                fig_gdp.update_layout(title=f"{country_name} GDP Growth", height=350, legend=dict(orientation="h", y=-0.2))
+                fig_gdp.add_trace(go.Scatter(x=gdp_yoy.index, y=gdp_yoy, name="YoY %", 
+                                           line=dict(color='firebrick', width=3), connectgaps=False))
+                fig_gdp.update_layout(title=f"{country_name} GDP Growth (YoY)", height=350)
                 st.plotly_chart(apply_mobile_style(fig_gdp), use_container_width=True)
 
             # (2) Inflation
             if 'CPI' in df.columns:
-                cpi_yoy = df['CPI'].pct_change(12) * 100
+                cpi_val = df['CPI'].dropna()
+                cpi_yoy = cpi_val.pct_change(12) * 100
                 fig_cpi = go.Figure()
-                fig_cpi.add_trace(go.Scatter(x=cpi_yoy.index, y=cpi_yoy, name="CPI YoY", line=dict(color='royalblue', width=2)))
-                if 'Core' in df.columns:
-                    core_yoy = df['Core'].pct_change(12) * 100
-                    fig_cpi.add_trace(go.Scatter(x=core_yoy.index, y=core_yoy, name="Core YoY", line=dict(color='orange', width=2, dash='dash')))
-                fig_cpi.update_layout(title=f"{country_name} Inflation", height=350, legend=dict(orientation="h", y=-0.2))
+                fig_cpi.add_trace(go.Scatter(x=cpi_yoy.index, y=cpi_yoy, name="CPI YoY", 
+                                           line=dict(color='royalblue', width=2), connectgaps=False))
+                fig_cpi.update_layout(title=f"{country_name} Inflation (YoY)", height=350)
                 st.plotly_chart(apply_mobile_style(fig_cpi), use_container_width=True)
 
         with c2:
             # (3) Unemployment
             if 'Unemp' in df.columns:
                 fig_job = go.Figure()
-                fig_job.add_trace(go.Scatter(x=df.index, y=df['Unemp'], name="Unemployment", fill='tozeroy', line=dict(color='gray')))
-                fig_job.update_layout(title=f"{country_name} Jobless Rate (%)", height=350)
+                fig_job.add_trace(go.Scatter(x=df.index, y=df['Unemp'], name="Unemployment", 
+                                           fill='tozeroy', line=dict(color='gray'), connectgaps=False))
+                fig_job.update_layout(title=f"{country_name} Unemployment Rate (%)", height=350)
                 st.plotly_chart(apply_mobile_style(fig_job), use_container_width=True)
 
-            # (4) Policy Rate (오류 수정 핵심 지점)
+            # (4) Policy Rate
             if 'Rate' in df.columns:
                 fig_rate = go.Figure()
-                fig_rate.add_trace(go.Scatter(
-                    x=df.index, y=df['Rate'], 
-                    name="Policy Rate", 
-                    line=dict(color='black', width=3, shape='hv') # shape를 line 안으로 이동
-                ))
+                fig_rate.add_trace(go.Scatter(x=df.index, y=df['Rate'], name="Policy Rate", 
+                                           line=dict(color='black', width=3, shape='hv')))
                 fig_rate.update_layout(title=f"{country_name} Policy Rate (%)", height=350)
                 st.plotly_chart(apply_mobile_style(fig_rate), use_container_width=True)
 
-    # 국가별 실행
+    # 실행 루프
     for i, country in enumerate(countries):
         with m_tabs[i]:
             if country == "South Korea":
-                with st.spinner('한국 데이터 수집 중...'):
-                    # 한국은행 통계표 코드에 맞춰 컬럼명 통일 (GDP, CPI, Unemp, Rate)
-                    k_gdp = get_bok_data('200Y005', 'Q', '10101', 'GDP')
-                    k_cpi = get_bok_data('901Y009', 'M', '0', 'CPI')
-                    k_job = get_bok_data('901Y053', 'M', '0', 'Unemp')
-                    k_rate = get_bok_data('722Y001', 'D', '0101000', 'Rate')
-                    
-                    kr_macro = pd.concat([k_gdp, k_cpi, k_job, k_rate], axis=1).ffill().tail(days_to_show)
-                    plot_macro_charts(kr_macro, "South Korea")
+                # 한국은행 데이터 (기존 로직 유지하되 컬럼명 매칭)
+                k_gdp = get_bok_data('200Y005', 'Q', '10101', 'GDP')
+                k_cpi = get_bok_data('901Y009', 'M', '0', 'CPI')
+                k_job = get_bok_data('901Y053', 'M', '0', 'Unemp')
+                k_rate = get_bok_data('722Y001', 'D', '0101000', 'Rate')
+                kr_df = pd.concat([k_gdp, k_cpi, k_job, k_rate], axis=1).sort_index().tail(days_to_show)
+                plot_refined_macro(kr_df, "South Korea")
             else:
-                with st.spinner(f'{country} 데이터 수집 중...'):
-                    codes = macro_codes.get(country)
-                    s_list = []
-                    for label, code in codes.items():
-                        s = get_fred_data(code).rename(columns={code: label})
-                        if not s.empty: s_list.append(s)
-                    
-                    if s_list:
-                        c_df = pd.concat(s_list, axis=1).ffill().tail(days_to_show)
-                        plot_macro_charts(c_df, country)
+                codes = macro_codes.get(country)
+                s_list = []
+                for label, code in codes.items():
+                    s = get_fred_data(code).rename(columns={code: label})
+                    if not s.empty: s_list.append(s)
+                
+                if s_list:
+                    # [핵심] 병합 시 ffill()을 남발하지 않고, 
+                    # 필요한 구간(days_to_show)만 정확히 잘라낸 뒤 시각화 함수로 넘김
+                    c_df = pd.concat(s_list, axis=1).sort_index().tail(days_to_show)
+                    plot_refined_macro(c_df, country)

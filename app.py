@@ -634,54 +634,80 @@ with tab6:
     except Exception as e:
         st.error(f"데이터 로드 및 분석 실패: {e}")
         
-# --- 탭 7: 금리 커브 (Yield Curve) ---
+# --- 탭 7: KR Yield Curve 상세 분석 (BoK API 활용) ---
 with tab7:
-    st.subheader("📈 Treasury Yield Curve Analysis (US & KR)")
-    st.caption("미국(FRED)과 한국(BOK)의 공식 국채 수익률을 비교합니다.")
+    st.subheader("🇰🇷 KR Treasury Yield Curve Analysis")
+    st.caption("한국은행(BoK) 공식 데이터를 활용하여 국고채 만기별 수익률 곡선을 분석합니다.")
 
-    with st.spinner('금리 데이터를 불러오는 중...'):
-        # 미국 국채 데이터 (이미 정의된 get_yield_curve_us 함수 활용)
-        us_yields = get_yield_curve_us()
+    # 1. 국고채 만기별 코드 정의 (통계표 817Y002)
+    kr_maturities = {
+        '1Y': '010190000', '2Y': '010200010', '3Y': '010200000', 
+        '5Y': '010210000', '10Y': '010220000', '20Y': '010230000', 
+        '30Y': '010240000', '50Y': '010250000'
+    }
+
+    @st.cache_data(ttl=3600)
+    def get_full_kr_yield_curve():
+        all_frames = []
+        for label, code in kr_maturities.items():
+            df = get_bok_data('817Y002', 'D', code, label)
+            if not df.empty:
+                all_frames.append(df)
+        return pd.concat(all_frames, axis=1).sort_index().ffill() if all_frames else pd.DataFrame()
+
+    with st.spinner('한국 국채 데이터를 로드 중...'):
+        kr_curve_data = get_full_kr_yield_curve()
+
+    if not kr_curve_data.empty:
+        # 2. 수익률 곡선 비교 (현재 vs 1달 전 vs 1년 전)
+        st.write("### 1. Yield Curve Comparison")
         
-        # 한국 국채 데이터 (수정된 get_bok_data 함수 활용)
-        # 817Y002: 시장금리(일), 010200000: 국고채 3년, 010210000: 국고채 10년
-        kr3y = get_bok_data('817Y002', 'D', '010200000', 'KR 3Y')
-        kr10y = get_bok_data('817Y002', 'D', '010210000', 'KR 10Y')
+        latest_date = kr_curve_data.index[-1]
+        one_month_ago = kr_curve_data.index[kr_curve_data.index <= (latest_date - pd.DateOffset(months=1))][-1]
+        one_year_ago = kr_curve_data.index[kr_curve_data.index <= (latest_date - pd.DateOffset(years=1))][-1]
+
+        fig_curve = go.Figure()
         
-        if not kr3y.empty and not kr10y.empty:
-            kr_yields = pd.concat([kr3y, kr10y], axis=1).ffill()
-        else:
-            kr_yields = pd.DataFrame()
+        # 현재 곡선
+        fig_curve.add_trace(go.Scatter(x=list(kr_maturities.keys()), y=kr_curve_data.loc[latest_date],
+                                     mode='lines+markers', name=f'Current ({latest_date.date()})',
+                                     line=dict(color='firebrick', width=4)))
+        # 1달 전 곡선
+        fig_curve.add_trace(go.Scatter(x=list(kr_maturities.keys()), y=kr_curve_data.loc[one_month_ago],
+                                     mode='lines+markers', name=f'1 Month Ago',
+                                     line=dict(color='rgba(255, 100, 100, 0.5)', dash='dot')))
+        # 1년 전 곡선
+        fig_curve.add_trace(go.Scatter(x=list(kr_maturities.keys()), y=kr_curve_data.loc[one_year_ago],
+                                     mode='lines+markers', name=f'1 Year Ago',
+                                     line=dict(color='grey', dash='dash')))
 
-    # --- 섹션 1: 현재 수익률 곡선 ---
-    col_u, col_k = st.columns(2)
-    with col_u:
-        if not us_yields.empty:
-            latest_us = us_yields.iloc[-1]
-            fig_us = go.Figure(go.Scatter(x=latest_us.index, y=latest_us.values, mode='lines+markers', line=dict(color='royalblue', width=3)))
-            fig_us.update_layout(title=f"US Yield Curve ({latest_us.name.date()})", template='plotly_white', yaxis_title="%")
-            st.plotly_chart(fig_us, use_container_width=True)
-    with col_k:
-        if not kr_yields.empty:
-            latest_kr = kr_yields.iloc[-1]
-            fig_kr = go.Figure(go.Scatter(x=latest_kr.index, y=latest_kr.values, mode='lines+markers', line=dict(color='firebrick', width=3)))
-            fig_kr.update_layout(title=f"KR Yield Curve ({latest_kr.name.date()})", template='plotly_white', yaxis_title="%")
-            st.plotly_chart(fig_kr, use_container_width=True)
+        fig_curve.update_layout(template='plotly_white', height=500, yaxis_title="Yield (%)",
+                               xaxis_title="Maturity", hovermode='x unified')
+        st.plotly_chart(fig_curve, use_container_width=True)
 
-    st.divider()
+        st.divider()
 
-    # --- 섹션 2: 장단기 금리차 추이 ---
-    if not us_yields.empty and not kr_yields.empty:
-        st.write("### 2. Yield Spread Trend (10Y - Short Term)")
-        us_spread = (us_yields['10Y'] - us_yields['2Y']).tail(days_to_show)
-        kr_spread = (kr_yields['KR 10Y'] - kr_yields['KR 3Y']).tail(days_to_show)
+        # 3. 주요 금리 스프레드 추이
+        st.write("### 2. Key Yield Spreads")
+        spread_10y3y = (kr_curve_data['10Y'] - kr_curve_data['3Y']).tail(days_to_show)
+        spread_30y10y = (kr_curve_data['30Y'] - kr_curve_data['10Y']).tail(days_to_show)
 
-        fig_spread = go.Figure()
-        fig_spread.add_hline(y=0, line_dash="dash", line_color="black")
-        fig_spread.add_trace(go.Scatter(x=us_spread.index, y=us_spread, name="US 10Y-2Y", line=dict(color='royalblue')))
-        fig_spread.add_trace(go.Scatter(x=kr_spread.index, y=kr_spread, name="KR 10Y-3Y", line=dict(color='firebrick')))
-        fig_spread.update_layout(template='plotly_white', hovermode='x unified', yaxis_title="Spread (%)")
-        st.plotly_chart(fig_spread, use_container_width=True)
+        fig_spreads = go.Figure()
+        fig_spreads.add_hline(y=0, line_dash="solid", line_color="black")
+        fig_spreads.add_trace(go.Scatter(x=spread_10y3y.index, y=spread_10y3y, name="10Y - 3Y (장단기)", line=dict(color='royalblue')))
+        fig_spreads.add_trace(go.Scatter(x=spread_30y10y.index, y=spread_30y10y, name="30Y - 10Y (초장기)", line=dict(color='forestgreen')))
+        
+        fig_spreads.update_layout(template='plotly_white', height=400, yaxis_title="Spread (%)", hovermode='x unified')
+        st.plotly_chart(fig_spreads, use_container_width=True)
+
+        st.info("""
+        💡 **Yield Curve 분석 가이드:**
+        * **Curve Flattening**: 장단기 금리차가 줄어드는 현상. 향후 경기 둔화 우려를 반영합니다.
+        * **Curve Steepening**: 장단기 금리차가 커지는 현상. 경기 회복세 및 인플레이션 기대감을 반영합니다.
+        * **장단기 역전**: 단기 금리가 장기 금리보다 높아지는 현상으로, 강력한 경기 침체 신호로 해석됩니다.
+        """)
+    else:
+        st.error("데이터를 불러오지 못했습니다. BOK_API_KEY와 통계 코드를 확인해 주세요.")
 
 # --- 탭 8: Macro Indicators (한-미 기준금리 역전 분석) ---
 with tab8:

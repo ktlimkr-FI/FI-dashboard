@@ -577,6 +577,75 @@ with tab6:
 
     except Exception as e:
         st.error(f"데이터 로드 실패: {e}")
+
+# --- 탭 6 하단에 추가: AFE vs EME 그룹 합산 분석 ---
+st.divider()
+st.write("### 🌐 3. AFE(선진국) vs EME(신흥국) 그룹 합산 분석")
+st.caption("Broad Dollar Index를 구성하는 두 거대 그룹의 비중 변화를 비교합니다.")
+
+# 1. 그룹별 합산 데이터 생성
+# 연도별로 AFE인 것들과 EME인 것들의 비중을 각각 합산
+group_trend = df_raw.groupby('Is_AFE')[year_cols].sum().T
+group_trend.columns = ['Emerging (EME)', 'Advanced (AFE)'] # Is_AFE가 True면 AFE, False면 EME
+group_trend = group_trend.sort_index() # 연도순 정렬
+
+# 2. 최신 비중 (가장 최근 연도)
+latest_group_val = group_trend.iloc[-1]
+
+c1, c2 = st.columns([1, 1.5])
+
+with c1:
+    st.write(f"#### 🥧 그룹별 현재 비중 ({latest_yr}년)")
+    fig_group_pie = go.Figure(data=[go.Pie(
+        labels=latest_group_val.index,
+        values=latest_group_val.values,
+        hole=.4,
+        marker_colors=['#EF553B', '#636EFA'], # EME: 빨강계열, AFE: 파랑계열
+        textinfo='label+percent',
+        textposition='outside'
+    )])
+    fig_group_pie.update_layout(height=400, showlegend=False, margin=dict(t=30, b=30, l=30, r=30))
+    st.plotly_chart(fig_group_pie, use_container_width=True)
+
+with c2:
+    st.write("#### 📈 그룹별 비중 시계열 추이")
+    fig_group_trend = go.Figure()
+    
+    # 신흥국(EME) 누적 영역
+    fig_group_trend.add_trace(go.Scatter(
+        x=group_trend.index, y=group_trend['Emerging (EME)'],
+        name="Emerging (EME)",
+        mode='lines',
+        stackgroup='one',
+        line=dict(color='#EF553B', width=0.5),
+        fillcolor='rgba(239, 85, 59, 0.5)'
+    ))
+    
+    # 선진국(AFE) 누적 영역
+    fig_group_trend.add_trace(go.Scatter(
+        x=group_trend.index, y=group_trend['Advanced (AFE)'],
+        name="Advanced (AFE)",
+        mode='lines',
+        stackgroup='one',
+        line=dict(color='#636EFA', width=0.5),
+        fillcolor='rgba(99, 110, 250, 0.5)'
+    ))
+
+    fig_group_trend.update_layout(
+        template='plotly_white',
+        height=400,
+        xaxis_title="Year",
+        yaxis_title="Total Weight (%)",
+        hovermode='x unified',
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    )
+    st.plotly_chart(fig_group_trend, use_container_width=True)
+
+st.success("""
+💡 **매크로 인사이트:**
+* **신흥국(EME) 비중의 증가:** 만약 과거 대비 EME의 영역이 넓어지고 있다면, 이는 달러 인덱스가 글로벌 공급망 변화와 신흥국 경기 상황에 더 민감하게 반응하게 되었음을 의미합니다.
+* **선진국(AFE)의 위상:** 유로화와 엔화 위주의 AFE 비중 변화를 통해 전통적인 달러 인덱스(DXY)와 연준 Broad Index 간의 괴리가 커지고 있는지 확인할 수 있습니다.
+""")
         
 # --- 탭 7: 금리 커브 (Yield Curve) ---
 with tab7:

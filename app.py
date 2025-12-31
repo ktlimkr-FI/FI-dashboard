@@ -709,110 +709,140 @@ with tab6:
     except Exception as e:
         st.error(f"데이터 로드 및 분석 실패: {e}")
 
-# --- 탭 7: KR Yield Curve (KeyError 방어 및 병합 로직 수정) ---
+# --- 탭 7: KR/US Yield Curve & Spread Matrix (정치한 분석 버전) ---
 with tab7:
-    st.subheader("🇰🇷 KR Treasury Yield Curve Analysis")
-    st.info("💡 2021년 3월 이전은 **통안증권 2년**, 이후는 **국고채 2년** 데이터를 결합합니다.")
-
-    kr_maturities = {
-        '1Y': '010190000', '3Y': '010200000', '5Y': '010210000', 
-        '10Y': '010220000', '20Y': '010230000', '30Y': '010240000'
-    }
-
+    st.subheader("🏛️ Yield Curve & Spread Matrix")
+    
+    # 1. 데이터 로드 (KR 하이브리드 + US FRED + 기준금리)
     @st.cache_data(ttl=3600)
-    def fetch_kr_yield_hybrid_v2():
-        api_key = st.secrets.get("BOK_API_KEY")
+    def fetch_comprehensive_yield_data():
+        api_key_bok = st.secrets.get("BOK_API_KEY")
+        # KR 코드는 이전과 동일 (2Y 하이브리드 포함)
+        kr_mats = {'1Y':'010190000','3Y':'010200000','5Y':'010210000','10Y':'010220000','20Y':'010230000','30Y':'010240000'}
+        us_mats = {'1Y':'DGS1','2Y':'DGS2','3Y':'DGS3','5Y':'DGS5','10Y':'DGS10','20Y':'DGS20','30Y':'DGS30'}
+        
         end_date = (datetime.now() - timedelta(days=1)).strftime('%Y%m%d')
-        start_date = "20100101"
+        start_date = "20150101"
         
-        results = []
-        # (A) 다른 만기물 로드
-        for label, code in kr_maturities.items():
-            url = f"http://ecos.bok.or.kr/api/StatisticSearch/{api_key}/json/kr/1/1000/817Y002/D/{start_date}/{end_date}/{code}"
-            try:
-                resp = requests.get(url, timeout=10)
-                data = resp.json()
-                if "StatisticSearch" in data:
-                    df = pd.DataFrame(data["StatisticSearch"]["row"])
-                    df['date'] = pd.to_datetime(df['TIME'])
-                    df[label] = pd.to_numeric(df['DATA_VALUE'])
-                    results.append(df[['date', label]].set_index('date'))
-            except: continue
-
-        # (B) 2년물 하이브리드 병합 (로직 정교화)
-        switch_date = None
-        try:
-            # 국고채 2년물 (KTB)
-            url_ktb = f"http://ecos.bok.or.kr/api/StatisticSearch/{api_key}/json/kr/1/1000/817Y002/D/{start_date}/{end_date}/010200010"
-            # 통안채 2년물 (MSB)
-            url_msb = f"http://ecos.bok.or.kr/api/StatisticSearch/{api_key}/json/kr/1/1000/817Y002/D/{start_date}/{end_date}/010400002"
-            
-            # 각각 데이터를 가져와서 컬럼명을 '2Y'로 미리 통일
-            r_ktb = requests.get(url_ktb, timeout=10).json()
-            r_msb = requests.get(url_msb, timeout=10).json()
-
-            ktb_df = pd.DataFrame()
-            if "StatisticSearch" in r_ktb:
-                ktb_df = pd.DataFrame(r_ktb["StatisticSearch"]["row"])
-                ktb_df['date'] = pd.to_datetime(ktb_df['TIME'])
-                ktb_df['2Y'] = pd.to_numeric(ktb_df['DATA_VALUE'])
-                ktb_df = ktb_df[['date', '2Y']].set_index('date')
-                switch_date = ktb_df.index.min() # 전환점 기록
-
-            msb_df = pd.DataFrame()
-            if "StatisticSearch" in r_msb:
-                msb_df = pd.DataFrame(r_msb["StatisticSearch"]["row"])
-                msb_df['date'] = pd.to_datetime(msb_df['TIME'])
-                msb_df['2Y'] = pd.to_numeric(msb_df['DATA_VALUE'])
-                msb_df = msb_df[['date', '2Y']].set_index('date')
-
-            # [핵심] combine_first로 국고채 우선, 빈 곳은 통안채로 채움
-            if not ktb_df.empty or not msb_df.empty:
-                hybrid_2y = ktb_df.combine_first(msb_df)
-                results.append(hybrid_2y)
-        except Exception as e:
-            st.error(f"2년물 데이터 생성 중 오류: {e}")
-
-        if results:
-            final_df = pd.concat(results, axis=1).sort_index().ffill()
-            return final_df, switch_date
-        return pd.DataFrame(), None
-
-    with st.spinner('한국은행에서 금리 데이터를 가져오고 병합 중...'):
-        yield_df, switch_date = fetch_kr_yield_hybrid_v2()
-
-    # 2. 시각화 섹션 (데이터 존재 여부 체크 추가)
-    if not yield_df.empty:
-        latest_date = yield_df.index[-1]
+        # (A) KR 데이터 수집
+        results_kr = []
+        for label, code in kr_mats.items():
+            df = get_bok_data('817Y002', 'D', code, label) # 기존 get_bok_data 활용
+            if not df.empty: results_kr.append(df)
         
-        # --- 2Y 시계열 차트 ---
-        if '2Y' in yield_df.columns:
-            st.write("### 📈 1. 2-Year Yield Trend & Source Switch")
-            fig_2y = go.Figure()
-            fig_2y.add_trace(go.Scatter(x=yield_df.index, y=yield_df['2Y'], name="2Y Yield (Hybrid)", line=dict(color='orange')))
+        # 2Y 하이브리드 별도 처리
+        ktb2 = get_bok_data('817Y002', 'D', '010200010', 'KTB2')
+        msb2 = get_bok_data('817Y002', 'D', '010400002', 'MSB2')
+        if not ktb2.empty or not msb2.empty:
+            h2y = ktb2.combine_first(msb2).rename(columns={'KTB2':'2Y'})
+            results_kr.append(h2y[['2Y']])
             
-            if switch_date:
-                fig_2y.add_vline(x=switch_date, line_dash="dash", line_color="red", annotation_text="KTB 2Y 시작점")
-            
-            fig_2y.update_layout(template='plotly_white', height=400)
-            st.plotly_chart(apply_mobile_style(fig_2y), use_container_width=True)
-        else:
-            st.warning("⚠️ 2년물(2Y) 데이터를 구성하지 못했습니다.")
+        # KR 기준금리 (722Y001, 0101000)
+        kr_base = get_bok_data('722Y001', 'D', '0101000', 'KR_BaseRate')
+        if not kr_base.empty: results_kr.append(kr_base)
+        
+        df_kr = pd.concat(results_kr, axis=1).sort_index().ffill()
+
+        # (B) US 데이터 수집 (FRED)
+        results_us = []
+        for label, code in us_mats.items():
+            df_u = get_fred_data(code).rename(columns={code: label})
+            results_us.append(df_u)
+        df_us = pd.concat(results_us, axis=1).sort_index().ffill()
+        
+        return df_kr, df_us
+
+    with st.spinner('한/미 금리 매트릭스 구성 중...'):
+        df_kr, df_us = fetch_comprehensive_yield_data()
+
+    if not df_kr.empty:
+        # --- [섹션 1] Yield Curve Shape (Snapshot) ---
+        st.write("### 📉 1. Yield Curve Dynamics")
+        latest_date = df_kr.index[-1]
+        
+        # 비교 시점 정의
+        time_offsets = {
+            'Current': latest_date,
+            '1W Ago': df_kr.index[df_kr.index <= (latest_date - timedelta(weeks=1))][-1],
+            '1M Ago': df_kr.index[df_kr.index <= (latest_date - pd.DateOffset(months=1))][-1],
+            '3M Ago': df_kr.index[df_kr.index <= (latest_date - pd.DateOffset(months=3))][-1],
+            '6M Ago': df_kr.index[df_kr.index <= (latest_date - pd.DateOffset(months=6))][-1],
+            '1Y Ago': df_kr.index[df_kr.index <= (latest_date - pd.DateOffset(years=1))][-1]
+        }
+        
+        x_mats = ['1Y', '2Y', '3Y', '5Y', '10Y', '20Y', '30Y']
+        
+        col_c1, col_c2 = st.columns(2)
+        
+        with col_c1:
+            st.write("#### 🇰🇷 KR Treasury Curve History")
+            fig_kr_history = go.Figure()
+            colors = ['firebrick', 'orange', 'green', 'blue', 'purple', 'gray']
+            for (label, date), color in zip(time_offsets.items(), colors):
+                y_vals = [df_kr.loc[date, m] for m in x_mats if m in df_kr.columns]
+                fig_kr_history.add_trace(go.Scatter(x=x_mats, y=y_vals, name=label, 
+                                                   line=dict(color=color, width=3 if label=='Current' else 1.5,
+                                                            dash='solid' if label=='Current' else 'dot')))
+            st.plotly_chart(apply_mobile_style(fig_kr_history), use_container_width=True)
+
+        with col_c2:
+            st.write("#### 🇺🇸 vs 🇰🇷 Current Comparison")
+            fig_comp = go.Figure()
+            # KR Current
+            fig_comp.add_trace(go.Scatter(x=x_mats, y=[df_kr.loc[latest_date, m] for m in x_mats if m in df_kr.columns], 
+                                        name="KR Treasury", line=dict(color='firebrick', width=3)))
+            # US Current
+            us_latest = df_us.index[-1]
+            fig_comp.add_trace(go.Scatter(x=x_mats, y=[df_us.loc[us_latest, m] for m in x_mats if m in df_us.columns], 
+                                        name="US Treasury", line=dict(color='royalblue', width=3)))
+            st.plotly_chart(apply_mobile_style(fig_comp), use_container_width=True)
 
         st.divider()
 
-        # --- Yield Curve Snapshot ---
-        st.write(f"### 2. KR Yield Curve Snapshot ({latest_date.date()})")
-        # 데이터가 있는 만기물만 표시
-        x_labels = [m for m in ['1Y', '2Y', '3Y', '5Y', '10Y', '20Y', '30Y'] if m in yield_df.columns]
-        y_vals = yield_df.loc[latest_date, x_labels].values
+        # --- [섹션 2] Yield Curve Time-Series Analysis ---
+        st.write("### 📈 2. Yield Spread Matrix")
         
-        fig_curve = go.Figure()
-        fig_curve.add_trace(go.Scatter(x=x_labels, y=y_vals, mode='lines+markers', line=dict(color='firebrick', width=4)))
-        fig_curve.update_layout(template='plotly_white', height=500, yaxis_title="Yield (%)")
-        st.plotly_chart(apply_mobile_style(fig_curve), use_container_width=True)
+        # 스프레드 선택 UI
+        tab_s1, tab_s2, tab_s3 = st.tabs(["구간별 스프레드", "기준금리 대비", "중요 구간(1/3, 2/5)"])
+        
+        with tab_s1:
+            st.write("#### 모든 구간별 스프레드 추이")
+            # 사용자가 직접 스프레드 조합 선택
+            s_col1, s_col2 = st.columns(2)
+            long_m = s_col1.selectbox("Long Term", x_mats, index=4) # 10Y
+            short_m = s_col2.selectbox("Short Term", x_mats, index=1) # 2Y
+            
+            spread_ts = (df_kr[long_m] - df_kr[short_m]).tail(days_to_show)
+            fig_spread_any = go.Figure()
+            fig_spread_any.add_hline(y=0, line_color="black")
+            fig_spread_any.add_trace(go.Scatter(x=spread_ts.index, y=spread_ts, fill='tozeroy', name=f"{long_m}-{short_m}"))
+            st.plotly_chart(apply_mobile_style(fig_spread_any), use_container_width=True)
+
+        with tab_s2:
+            st.write("#### 국채 금리 vs 한국은행 기준금리 스프레드")
+            if 'KR_BaseRate' in df_kr.columns:
+                target_m = st.selectbox("대상 만기", x_mats, index=2) # 3Y
+                base_spread = (df_kr[target_m] - df_kr['KR_BaseRate']).tail(days_to_show)
+                fig_base = go.Figure()
+                fig_base.add_hline(y=0, line_color="black")
+                fig_base.add_trace(go.Scatter(x=base_spread.index, y=base_spread, name=f"{target_m}-BaseRate", line=dict(color='darkgreen')))
+                st.plotly_chart(apply_mobile_style(fig_base), use_container_width=True)
+
+        with tab_s3:
+            st.write("#### 중요 구간 스프레드 모니터링 (1/3Y, 2/5Y)")
+            fig_key = go.Figure()
+            if '3Y' in df_kr.columns and '1Y' in df_kr.columns:
+                s13 = (df_kr['3Y'] - df_kr['1Y']).tail(days_to_show)
+                fig_key.add_trace(go.Scatter(x=s13.index, y=s13, name="3Y - 1Y (통화정책 민감)"))
+            if '5Y' in df_kr.columns and '2Y' in df_kr.columns:
+                s25 = (df_kr['5Y'] - df_kr['2Y']).tail(days_to_show)
+                fig_key.add_trace(go.Scatter(x=s25.index, y=s25, name="5Y - 2Y (경기 중기 전망)"))
+            
+            fig_key.update_layout(yaxis_title="Spread (%)")
+            st.plotly_chart(apply_mobile_style(fig_key), use_container_width=True)
+
     else:
-        st.error("데이터 로드에 실패했습니다. API 키와 네트워크를 확인하세요.")
+        st.error("데이터를 로드하지 못했습니다. 한국은행 API 상태를 확인하세요.")
         
 # --- 탭 8: Macro Indicators (한-미 기준금리 역전 분석) ---
 with tab8:

@@ -11,8 +11,7 @@ FRED_API_KEY = os.environ['FRED_API_KEY']
 GSHEET_ID = os.environ['GSHEET_ID']
 SERVICE_ACCOUNT_JSON = os.environ['GOOGLE_SERVICE_ACCOUNT_JSON']
 
-# 2. 업데이트할 탭 및 지표 정의 (사용자님의 코드 기반)
-# 향후 탭이 늘어나면 여기에 추가하면 됩니다.
+# 2. 업데이트할 탭 및 지표 정의 (사용자님의 탭 이름 반영)
 TARGET_TABS = {
     'data-daily': {
         'RPONTTLD': 'Repo_Volume',
@@ -37,25 +36,42 @@ def update_sheet():
     sh = gc.open_by_key(GSHEET_ID)
 
     for tab_name, series_map in TARGET_TABS.items():
-        print(f"🔄 {tab_name} 업데이트 시작...")
+        print(f"🔄 {tab_name} 업데이트 프로세스 시작...")
+        
+        # 탭 찾기 또는 생성
         try:
             ws = sh.worksheet(tab_name)
         except gspread.exceptions.WorksheetNotFound:
-            ws = sh.add_worksheet(title=tab_name, rows="1000", cols="20")
-            ws.append_row(['Date'] + list(series_map.values()))
-        
-        # 기존 데이터 확인
-        existing_data = ws.get_all_values()
-        if len(existing_data) <= 1:  # 헤더만 있거나 비어있을 때
-            start_date = (datetime.now() - timedelta(days=365*10)).strftime('%Y-%m-%d')
-            print(f"📅 초기 데이터 로드: 10년치 데이터를 가져옵니다.")
-        else:
-            df_existing = pd.DataFrame(existing_data[1:], columns=existing_data[0])
-            last_date_str = df_existing['Date'].max()
-            start_date = (datetime.strptime(last_date_str, '%Y-%m-%d') + timedelta(days=1)).strftime('%Y-%m-%d')
-            print(f"📅 마지막 날짜({last_date_str}) 이후 데이터를 가져옵니다.")
+            ws = sh.add_worksheet(title=tab_name, rows="5000", cols="20")
+            print(f"✨ {tab_name} 탭을 새로 생성했습니다.")
 
-        # FRED 데이터 수집
+        # 시트의 현재 모든 데이터 읽기
+        all_values = ws.get_all_values()
+        
+        # 3. 헤더 및 시작 날짜 설정 로직
+        if not all_values:
+            # 시트가 완전히 비어있는 경우: 헤더 작성 후 2006년부터 로드
+            headers = ['Date'] + list(series_map.values())
+            ws.append_row(headers)
+            start_date = '2006-01-01'
+            print(f"📝 헤더가 없어 새로 작성했습니다: {headers}")
+            print(f"📅 초기 데이터 수집 시작: {start_date}")
+        elif len(all_values) == 1:
+            # 헤더만 있고 데이터는 없는 경우: 2006년부터 로드
+            start_date = '2006-01-01'
+            print(f"📅 헤더 확인 완료. 2006년부터 데이터를 채웁니다.")
+        else:
+            # 이미 데이터가 있는 경우: 마지막 날짜 다음 날부터 로드
+            last_date_str = all_values[-1][0]
+            try:
+                start_date = (datetime.strptime(last_date_str, '%Y-%m-%d') + timedelta(days=1)).strftime('%Y-%m-%d')
+                print(f"📅 기존 데이터 확인. {start_date}부터 업데이트를 시작합니다.")
+            except ValueError:
+                # 날짜 형식이 잘못된 경우 안전하게 2006년부터 다시 시작
+                start_date = '2006-01-01'
+                print(f"⚠️ 날짜 형식이 올바르지 않아 2006년부터 다시 수집합니다.")
+
+        # 4. FRED 데이터 수집 및 결합
         combined_new = pd.DataFrame()
         for s_id, col_name in series_map.items():
             try:
@@ -69,17 +85,19 @@ def update_sheet():
             except Exception as e:
                 print(f"⚠️ {s_id} 로드 실패: {e}")
 
+        # 5. 구글 시트에 데이터 쓰기
         if not combined_new.empty:
             combined_new.index.name = 'Date'
             combined_new = combined_new.reset_index()
             combined_new['Date'] = combined_new['Date'].dt.strftime('%Y-%m-%d')
-            # NaN 값 처리 (구글 시트 전송을 위해 빈 문자열로 변경)
-            combined_new = combined_new.fillna("")
+            combined_new = combined_new.fillna("") # 빈 칸 처리
             
-            ws.append_rows(combined_new.values.tolist())
-            print(f"✅ {len(combined_new)}건의 데이터 추가 완료.")
+            # 리스트 형태로 변환하여 전송
+            data_to_append = combined_new.values.tolist()
+            ws.append_rows(data_to_append)
+            print(f"✅ {len(data_to_append)}건의 데이터를 추가했습니다.")
         else:
-            print("ℹ️ 추가할 새로운 데이터가 없습니다.")
+            print("ℹ️ 새로 추가할 데이터가 없습니다.")
 
 if __name__ == "__main__":
     update_sheet()

@@ -9,3 +9,5 @@ lxml
 html5lib
 finance-datareader
 st-gsheets-connection
+gspread
+google-auth

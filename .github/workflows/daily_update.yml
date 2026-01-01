@@ -1,0 +1,29 @@
+name: Financial Data Update
+
+on:
+  schedule:
+    - cron: '0 21 * * *'  # 한국 시간(KST) 매일 오전 6시 (UTC 21:00)
+  workflow_dispatch:      # 필요할 때 수동 실행 버튼 활성화
+
+jobs:
+  run-updater:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 코드 체크아웃
+        uses: actions/checkout@v3
+
+      - name: 파이썬 설정
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: 라이브러리 설치
+        run: |
+          pip install pandas fredapi gspread google-auth
+
+      - name: 업데이트 스크립트 실행
+        env:
+          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+          GSHEET_ID: ${{ secrets.GSHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+        run: python updater.py

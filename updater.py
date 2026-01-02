@@ -220,7 +220,7 @@ def update_daily(fred, sh):
     # =========================
     # (1) MODE / CONSTANTS
     # =========================
-    FULL_BACKFILL = True    # 🔥 딱 한 번만 True → 이후 False로 변경!
+    FULL_BACKFILL = False    # 🔥 딱 한 번만 True → 이후 False로 변경!
     FULL_START_DATE = "2006-01-01"
 
     TAB_NAME = "data-daily"

@@ -204,10 +204,6 @@ def load_ofr_multifull(mnemonics: list[str], start_date: str) -> pd.DataFrame:
 # =========================
 # Update routines per tab
 # =========================
-# import time
-# import pandas as pd
-# from datetime import datetime, timedelta
-
 def update_daily(fred, sh):
     """
     Daily updater that BACKFILLS missing values by merging with existing sheet data.
@@ -218,7 +214,7 @@ def update_daily(fred, sh):
     """
 
     TAB_NAME = "data-daily"
-    LOOKBACK_DAYS = 30  # 10도 되지만, 누락/휴일/지연 감안해 30 권장
+    LOOKBACK_DAYS = 30  # 누락/휴일/지연 감안
 
     ws = ensure_worksheet(sh, TAB_NAME)
 
@@ -227,19 +223,24 @@ def update_daily(fred, sh):
     header, _last_date_str = get_header_and_last_date(ws)
 
     if header != headers:
-        # 헤더가 다르면 전체 재작성할 거라 우선 clear 후 헤더부터 깔끔히
         ws.clear()
         ws.append_row(headers, value_input_option="USER_ENTERED")
 
     # 2) Read existing sheet -> df_existing
-    records = ws.get_all_records()  # header row 기준으로 dict list 반환
+    records = ws.get_all_records()
     if records:
         df_existing = pd.DataFrame(records)
-        # Date 파싱
-        df_existing["Date"] = pd.to_datetime(df_existing["Date"], errors="coerce")
-        df_existing = df_existing.dropna(subset=["Date"]).set_index("Date").sort_index()
+
+        # (중요) Date 컬럼이 실제로 있는지 방어
+        if "Date" not in df_existing.columns:
+            # 헤더만 있고 데이터가 없거나, 비정상 레코드인 케이스
+            df_existing = pd.DataFrame(columns=headers[1:])
+            df_existing.index.name = "Date"
+        else:
+            df_existing["Date"] = pd.to_datetime(df_existing["Date"], errors="coerce")
+            df_existing = df_existing.dropna(subset=["Date"]).set_index("Date").sort_index()
     else:
-        df_existing = pd.DataFrame(columns=headers[1:])  # Date 제외
+        df_existing = pd.DataFrame(columns=headers[1:])
         df_existing.index.name = "Date"
 
     # 3) Pull fresh data for lookback window
@@ -247,6 +248,10 @@ def update_daily(fred, sh):
     print(f"📌 {TAB_NAME}: pulling from {pull_start} (UTC)")
 
     df_pulled = pd.DataFrame()
+    print("PULLED shape:", df_pulled.shape)
+    print("PULLED cols:", df_pulled.columns.tolist())
+    print("PULLED tail:\n", df_pulled.tail(3))
+
     for sid, col in DAILY_FRED_SERIES.items():
         try:
             s = fred.get_series(sid, observation_start=pull_start)
@@ -264,26 +269,35 @@ def update_daily(fred, sh):
         print(f"ℹ️ {TAB_NAME}: no data pulled from FRED")
         return
 
-    # 4) Merge strategy:
-    # - keep existing values
-    # - fill missing (NaN/blank) with pulled data
-    # 먼저 existing의 빈문자("")를 NaN으로 바꿔 병합이 되게 함
+    # (중요) 인덱스 이름을 강제해서 reset_index 후 Date가 생기게 함
+    df_pulled.index.name = "Date"
+
+    # 4) Merge strategy: keep existing, fill missing from pulled
     df_existing_clean = df_existing.copy()
     for c in df_existing_clean.columns:
         df_existing_clean[c] = df_existing_clean[c].replace("", pd.NA)
 
-    # pulled를 기존에 합치고, 기존이 비어있으면 pulled로 채움
     df_merged = df_existing_clean.combine_first(df_pulled)
+    df_merged.index.name = "Date"
 
-    # 5) Ensure all required columns exist (in case sheet had fewer)
+    # 5) Ensure all required columns exist + enforce column order
     for c in headers[1:]:
         if c not in df_merged.columns:
             df_merged[c] = pd.NA
-    df_merged = df_merged[headers[1:]]  # 컬럼 순서 고정
+    df_merged = df_merged[headers[1:]]
 
-    # 6) Rewrite sheet (전체 재작성)
+    # 6) Rewrite sheet
     df_out = df_merged.reset_index()
-    df_out["Date"] = df_out["Date"].dt.strftime("%Y-%m-%d")
+
+    # reset_index 결과가 'index'로 나오면 Date로 rename (안전장치)
+    if "Date" not in df_out.columns and "index" in df_out.columns:
+        df_out = df_out.rename(columns={"index": "Date"})
+
+    # 여기서 Date는 반드시 존재해야 함
+    if "Date" not in df_out.columns:
+        raise ValueError("Internal error: Date column missing after reset_index().")
+
+    df_out["Date"] = pd.to_datetime(df_out["Date"], errors="coerce").dt.strftime("%Y-%m-%d")
     df_out = df_out.fillna("")
 
     values = [headers] + df_out.values.tolist()
@@ -292,6 +306,7 @@ def update_daily(fred, sh):
     ws.update(values, value_input_option="USER_ENTERED")
 
     print(f"✅ {TAB_NAME}: rewritten rows={len(df_out)} cols={len(headers)}")
+
 
 
 

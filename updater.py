@@ -125,8 +125,9 @@ def append_rows(ws, rows: list[list]):
     ws.append_rows(rows, value_input_option="USER_ENTERED")
     return len(rows)
 
+from typing import Optional
 
-def pick_start_date(last_date_str: str | None, default_start: str) -> str:
+def pick_start_date(last_date_str: Optional[str], default_start: str) -> str:
     if not last_date_str:
         return default_start
     try:

@@ -205,40 +205,73 @@ def load_ofr_multifull(mnemonics: list[str], start_date: str) -> pd.DataFrame:
 # Update routines per tab
 # =========================
 def update_daily(fred: Fred, sh):
-    tab = "data-daily"
-    ws = ensure_worksheet(sh, tab)
+    """
+    Daily financial series updater with LOOKBACK window.
+    - Re-pulls last N days to avoid missing data due to holidays / publication lag
+    - Appends only truly new dates to Google Sheet
+    """
+
+    LOOKBACK_DAYS = 10
+    TAB_NAME = "data-daily"
+
+    ws = ensure_worksheet(sh, TAB_NAME)
 
     target_headers = ["Date"] + list(DAILY_FRED_SERIES.values())
-    header, last_date = get_header_and_last_date(ws)
+    header, last_date_str = get_header_and_last_date(ws)
 
+    # 1. Header 정합성 보장
     if header != target_headers:
         write_header(ws, target_headers)
 
-    start_date = pick_start_date(last_date, default_start="2006-01-01")
-    print(f"📌 {tab}: start_date={start_date}")
+    # 2. Pull start (LOOKBACK)
+    pull_start = (datetime.utcnow() - timedelta(days=LOOKBACK_DAYS)).strftime("%Y-%m-%d")
+    print(f"📌 {TAB_NAME}: lookback pull from {pull_start}")
 
+    # 3. 모든 daily 시리즈를 동일한 날짜 인덱스로 결합
     combined = pd.DataFrame()
+
     for sid, col in DAILY_FRED_SERIES.items():
         try:
-            s = fred_series(fred, sid, start_date)
-            if s.empty:
+            s = fred.get_series(sid, observation_start=pull_start)
+            if s is None or len(s) == 0:
                 continue
+
+            s = s.sort_index()
+            s.index = pd.to_datetime(s.index)
+
             tmp = s.to_frame(name=col)
             combined = tmp if combined.empty else combined.join(tmp, how="outer")
-            time.sleep(0.15)
+
+            time.sleep(0.15)  # FRED rate limit 보호
+
         except Exception as e:
-            print(f"⚠️ {tab} FRED load failed {sid}: {e}")
+            print(f"⚠️ DAILY load failed: {sid} ({e})")
 
     if combined.empty:
-        print(f"ℹ️ {tab}: no new rows")
+        print(f"ℹ️ {TAB_NAME}: no data pulled")
         return
 
+    # 4. 마지막 날짜 이후 데이터만 남김 (중복 방지)
+    if last_date_str:
+        last_dt = pd.to_datetime(last_date_str)
+        combined = combined[combined.index > last_dt]
+
+    if combined.empty:
+        print(f"ℹ️ {TAB_NAME}: no new rows after filtering")
+        return
+
+    # 5. Sheet append
     combined.index.name = "Date"
     combined = combined.reset_index()
-    combined["Date"] = pd.to_datetime(combined["Date"]).dt.strftime("%Y-%m-%d")
-    combined = combined[["Date"] + list(DAILY_FRED_SERIES.values())].fillna("")
-    n = append_rows(ws, combined.values.tolist())
-    print(f"✅ {tab}: appended {n} rows")
+    combined["Date"] = combined["Date"].dt.strftime("%Y-%m-%d")
+
+    combined = combined[["Date"] + list(DAILY_FRED_SERIES.values())]
+    combined = combined.fillna("")
+
+    rows = combined.values.tolist()
+    ws.append_rows(rows, value_input_option="USER_ENTERED")
+
+    print(f"✅ {TAB_NAME}: appended {len(rows)} rows")
 
 
 def update_weekly_ofr(sh):

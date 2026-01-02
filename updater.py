@@ -211,29 +211,43 @@ def update_daily(fred, sh):
     - Read existing sheet into DataFrame
     - Merge (prefer existing unless missing; fill missing from fresh pull)
     - Rewrite the whole sheet (safe for a few thousand rows)
+
+    FULL_BACKFILL 모드:
+    - 딱 1회 전체 히스토리(예: 2006-01-01~)를 다시 받아서 시트를 완전히 재구성
+    - 이후 반드시 FULL_BACKFILL=False로 되돌려 운영 모드로 전환
     """
 
+    # =========================
+    # (1) MODE / CONSTANTS
+    # =========================
+    FULL_BACKFILL = True    # 🔥 딱 한 번만 True → 이후 False로 변경!
+    FULL_START_DATE = "2006-01-01"
+
     TAB_NAME = "data-daily"
-    LOOKBACK_DAYS = 30  # 누락/휴일/지연 감안
+    LOOKBACK_DAYS = 30      # 누락/휴일/지연 감안 (운영 모드에서만 사용)
 
     ws = ensure_worksheet(sh, TAB_NAME)
 
-    # 1) Headers (Date + columns in the order you want)
+    # =========================
+    # (2) HEADERS / SHEET SHAPE
+    # =========================
     headers = ["Date"] + list(DAILY_FRED_SERIES.values())
     header, _last_date_str = get_header_and_last_date(ws)
 
+    # 헤더가 다르면 초기화 후 헤더 재작성
     if header != headers:
         ws.clear()
         ws.append_row(headers, value_input_option="USER_ENTERED")
 
-    # 2) Read existing sheet -> df_existing
-    records = ws.get_all_records()
+    # =========================
+    # (3) READ EXISTING -> df_existing
+    # =========================
+    records = ws.get_all_records()  # header row 기준 dict list
     if records:
         df_existing = pd.DataFrame(records)
 
-        # (중요) Date 컬럼이 실제로 있는지 방어
+        # 방어: Date 컬럼이 없으면 "데이터가 사실상 없음"으로 처리
         if "Date" not in df_existing.columns:
-            # 헤더만 있고 데이터가 없거나, 비정상 레코드인 케이스
             df_existing = pd.DataFrame(columns=headers[1:])
             df_existing.index.name = "Date"
         else:
@@ -243,25 +257,43 @@ def update_daily(fred, sh):
         df_existing = pd.DataFrame(columns=headers[1:])
         df_existing.index.name = "Date"
 
-    # 3) Pull fresh data for lookback window
-    pull_start = (datetime.utcnow() - timedelta(days=LOOKBACK_DAYS)).strftime("%Y-%m-%d")
-    print(f"📌 {TAB_NAME}: pulling from {pull_start} (UTC)")
+    # =========================
+    # (4) FULL_BACKFILL이면 기존 시트 데이터 무시 (정확한 위치 1)
+    # =========================
+    if FULL_BACKFILL:
+        print("🚨 FULL BACKFILL MODE: ignoring existing sheet data")
+        df_existing = pd.DataFrame(columns=headers[1:])
+        df_existing.index.name = "Date"
 
+    # =========================
+    # (5) PULL START 결정 (정확한 위치 2)
+    # =========================
+    if FULL_BACKFILL:
+        pull_start = FULL_START_DATE
+        print(f"🚨 FULL BACKFILL MODE: pulling full history from {pull_start}")
+    else:
+        pull_start = (datetime.utcnow() - timedelta(days=LOOKBACK_DAYS)).strftime("%Y-%m-%d")
+        print(f"📌 {TAB_NAME}: pulling from {pull_start} (UTC)")
+
+    # =========================
+    # (6) PULL FROM FRED -> df_pulled
+    # =========================
     df_pulled = pd.DataFrame()
-    print("PULLED shape:", df_pulled.shape)
-    print("PULLED cols:", df_pulled.columns.tolist())
-    print("PULLED tail:\n", df_pulled.tail(3))
+    df_pulled.index.name = "Date"
 
     for sid, col in DAILY_FRED_SERIES.items():
         try:
             s = fred.get_series(sid, observation_start=pull_start)
             if s is None or len(s) == 0:
                 continue
+
             s = s.sort_index()
             s.index = pd.to_datetime(s.index)
+
             tmp = s.to_frame(name=col)
             df_pulled = tmp if df_pulled.empty else df_pulled.join(tmp, how="outer")
-            time.sleep(0.15)
+
+            time.sleep(0.15)  # FRED 요청 과다 방지
         except Exception as e:
             print(f"⚠️ DAILY load failed: {sid} ({e})")
 
@@ -269,10 +301,12 @@ def update_daily(fred, sh):
         print(f"ℹ️ {TAB_NAME}: no data pulled from FRED")
         return
 
-    # (중요) 인덱스 이름을 강제해서 reset_index 후 Date가 생기게 함
+    # reset_index() 시 Date 컬럼 생성 보장
     df_pulled.index.name = "Date"
 
-    # 4) Merge strategy: keep existing, fill missing from pulled
+    # =========================
+    # (7) MERGE (existing 우선, 결측만 pulled로 채움)
+    # =========================
     df_existing_clean = df_existing.copy()
     for c in df_existing_clean.columns:
         df_existing_clean[c] = df_existing_clean[c].replace("", pd.NA)
@@ -280,20 +314,24 @@ def update_daily(fred, sh):
     df_merged = df_existing_clean.combine_first(df_pulled)
     df_merged.index.name = "Date"
 
-    # 5) Ensure all required columns exist + enforce column order
+    # =========================
+    # (8) COLUMN ENSURE + ORDER
+    # =========================
     for c in headers[1:]:
         if c not in df_merged.columns:
             df_merged[c] = pd.NA
+
     df_merged = df_merged[headers[1:]]
 
-    # 6) Rewrite sheet
+    # =========================
+    # (9) REWRITE WHOLE SHEET
+    # =========================
     df_out = df_merged.reset_index()
 
     # reset_index 결과가 'index'로 나오면 Date로 rename (안전장치)
     if "Date" not in df_out.columns and "index" in df_out.columns:
         df_out = df_out.rename(columns={"index": "Date"})
 
-    # 여기서 Date는 반드시 존재해야 함
     if "Date" not in df_out.columns:
         raise ValueError("Internal error: Date column missing after reset_index().")
 
@@ -306,7 +344,6 @@ def update_daily(fred, sh):
     ws.update(values, value_input_option="USER_ENTERED")
 
     print(f"✅ {TAB_NAME}: rewritten rows={len(df_out)} cols={len(headers)}")
-
 
 
 

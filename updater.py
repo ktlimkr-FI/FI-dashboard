@@ -204,74 +204,95 @@ def load_ofr_multifull(mnemonics: list[str], start_date: str) -> pd.DataFrame:
 # =========================
 # Update routines per tab
 # =========================
-def update_daily(fred: Fred, sh):
+# import time
+# import pandas as pd
+# from datetime import datetime, timedelta
+
+def update_daily(fred, sh):
     """
-    Daily financial series updater with LOOKBACK window.
-    - Re-pulls last N days to avoid missing data due to holidays / publication lag
-    - Appends only truly new dates to Google Sheet
+    Daily updater that BACKFILLS missing values by merging with existing sheet data.
+    - Pull last N days from FRED (lookback)
+    - Read existing sheet into DataFrame
+    - Merge (prefer existing unless missing; fill missing from fresh pull)
+    - Rewrite the whole sheet (safe for a few thousand rows)
     """
 
-    LOOKBACK_DAYS = 10
     TAB_NAME = "data-daily"
+    LOOKBACK_DAYS = 30  # 10도 되지만, 누락/휴일/지연 감안해 30 권장
 
     ws = ensure_worksheet(sh, TAB_NAME)
 
-    target_headers = ["Date"] + list(DAILY_FRED_SERIES.values())
-    header, last_date_str = get_header_and_last_date(ws)
+    # 1) Headers (Date + columns in the order you want)
+    headers = ["Date"] + list(DAILY_FRED_SERIES.values())
+    header, _last_date_str = get_header_and_last_date(ws)
 
-    # 1. Header 정합성 보장
-    if header != target_headers:
-        write_header(ws, target_headers)
+    if header != headers:
+        # 헤더가 다르면 전체 재작성할 거라 우선 clear 후 헤더부터 깔끔히
+        ws.clear()
+        ws.append_row(headers, value_input_option="USER_ENTERED")
 
-    # 2. Pull start (LOOKBACK)
+    # 2) Read existing sheet -> df_existing
+    records = ws.get_all_records()  # header row 기준으로 dict list 반환
+    if records:
+        df_existing = pd.DataFrame(records)
+        # Date 파싱
+        df_existing["Date"] = pd.to_datetime(df_existing["Date"], errors="coerce")
+        df_existing = df_existing.dropna(subset=["Date"]).set_index("Date").sort_index()
+    else:
+        df_existing = pd.DataFrame(columns=headers[1:])  # Date 제외
+        df_existing.index.name = "Date"
+
+    # 3) Pull fresh data for lookback window
     pull_start = (datetime.utcnow() - timedelta(days=LOOKBACK_DAYS)).strftime("%Y-%m-%d")
-    print(f"📌 {TAB_NAME}: lookback pull from {pull_start}")
+    print(f"📌 {TAB_NAME}: pulling from {pull_start} (UTC)")
 
-    # 3. 모든 daily 시리즈를 동일한 날짜 인덱스로 결합
-    combined = pd.DataFrame()
-
+    df_pulled = pd.DataFrame()
     for sid, col in DAILY_FRED_SERIES.items():
         try:
             s = fred.get_series(sid, observation_start=pull_start)
             if s is None or len(s) == 0:
                 continue
-
             s = s.sort_index()
             s.index = pd.to_datetime(s.index)
-
             tmp = s.to_frame(name=col)
-            combined = tmp if combined.empty else combined.join(tmp, how="outer")
-
-            time.sleep(0.15)  # FRED rate limit 보호
-
+            df_pulled = tmp if df_pulled.empty else df_pulled.join(tmp, how="outer")
+            time.sleep(0.15)
         except Exception as e:
             print(f"⚠️ DAILY load failed: {sid} ({e})")
 
-    if combined.empty:
-        print(f"ℹ️ {TAB_NAME}: no data pulled")
+    if df_pulled.empty:
+        print(f"ℹ️ {TAB_NAME}: no data pulled from FRED")
         return
 
-    # 4. 마지막 날짜 이후 데이터만 남김 (중복 방지)
-    if last_date_str:
-        last_dt = pd.to_datetime(last_date_str)
-        combined = combined[combined.index > last_dt]
+    # 4) Merge strategy:
+    # - keep existing values
+    # - fill missing (NaN/blank) with pulled data
+    # 먼저 existing의 빈문자("")를 NaN으로 바꿔 병합이 되게 함
+    df_existing_clean = df_existing.copy()
+    for c in df_existing_clean.columns:
+        df_existing_clean[c] = df_existing_clean[c].replace("", pd.NA)
 
-    if combined.empty:
-        print(f"ℹ️ {TAB_NAME}: no new rows after filtering")
-        return
+    # pulled를 기존에 합치고, 기존이 비어있으면 pulled로 채움
+    df_merged = df_existing_clean.combine_first(df_pulled)
 
-    # 5. Sheet append
-    combined.index.name = "Date"
-    combined = combined.reset_index()
-    combined["Date"] = combined["Date"].dt.strftime("%Y-%m-%d")
+    # 5) Ensure all required columns exist (in case sheet had fewer)
+    for c in headers[1:]:
+        if c not in df_merged.columns:
+            df_merged[c] = pd.NA
+    df_merged = df_merged[headers[1:]]  # 컬럼 순서 고정
 
-    combined = combined[["Date"] + list(DAILY_FRED_SERIES.values())]
-    combined = combined.fillna("")
+    # 6) Rewrite sheet (전체 재작성)
+    df_out = df_merged.reset_index()
+    df_out["Date"] = df_out["Date"].dt.strftime("%Y-%m-%d")
+    df_out = df_out.fillna("")
 
-    rows = combined.values.tolist()
-    ws.append_rows(rows, value_input_option="USER_ENTERED")
+    values = [headers] + df_out.values.tolist()
 
-    print(f"✅ {TAB_NAME}: appended {len(rows)} rows")
+    ws.clear()
+    ws.update(values, value_input_option="USER_ENTERED")
+
+    print(f"✅ {TAB_NAME}: rewritten rows={len(df_out)} cols={len(headers)}")
+
 
 
 def update_weekly_ofr(sh):

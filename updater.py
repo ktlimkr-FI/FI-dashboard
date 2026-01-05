@@ -77,6 +77,97 @@ QUARTERLY_LEVEL_SERIES = [
     {"series_id": "CHNGDPNQDSMEI", "prefix": "CN_RealGDP"},
 ]
 
+# =========================
+# CONFIG: IMF (IFS) codes
+# =========================
+IMF_DATASET = "IFS"  # using IMF SDMX_JSON CompactData/IFS  :contentReference[oaicite:1]{index=1}
+
+IMF_MONTHLY = {
+    "US": {
+        "iso": "US",
+        "imf": "111",
+        "cpi_headline": "M.111.PCPI_IX",
+        "cpi_core": "M.111.PCPIFE_IX",
+        "unemployment": "M.111.LUR_PT",
+        "policy_rate": "M.111.FPOLM_PA",
+    },
+    "CA": {
+        "iso": "CA",
+        "imf": "156",
+        "cpi_headline": "M.156.PCPI_IX",
+        "cpi_core": "M.156.PCPIFE_IX",
+        "unemployment": "M.156.LUR_PT",
+        "policy_rate": "M.156.FPOLM_PA",
+    },
+    "DE": {
+        "iso": "DE",
+        "imf": "134",
+        "cpi_headline": "M.134.PCPI_IX",
+        "cpi_core": "M.134.PCPIFE_IX",
+        "unemployment": "M.134.LUR_PT",
+        "policy_rate": "M.134.FPOLM_PA",  # note (1) in your table
+    },
+    "EA": {
+        "iso": "EA",
+        "imf": "U2",
+        "cpi_headline": "M.U2.PCPI_IX",
+        "cpi_core": "M.U2.PCPIFE_IX",
+        "unemployment": "M.U2.LUR_PT",
+        "policy_rate": "M.U2.FPOLM_PA",
+    },
+    "CH": {
+        "iso": "CH",
+        "imf": "146",
+        "cpi_headline": "M.146.PCPI_IX",
+        "cpi_core": "M.146.PCPIFE_IX",
+        "unemployment": "M.146.LUR_PT",
+        "policy_rate": "M.146.FPOLM_PA",
+    },
+    "JP": {
+        "iso": "JP",
+        "imf": "158",
+        "cpi_headline": "M.158.PCPI_IX",
+        "cpi_core": "M.158.PCPIFE_IX",
+        "unemployment": "M.158.LUR_PT",
+        "policy_rate": "M.158.FPOLM_PA",
+    },
+    "CN": {
+        "iso": "CN",
+        "imf": "924",
+        "cpi_headline": "M.924.PCPI_IX",
+        "cpi_core": "M.924.PCPIFE_IX",
+        "unemployment": "M.924.LUR_PT",  # note (2) in your table
+        "policy_rate": "M.924.FPOLM_PA",
+    },
+    "HK": {
+        "iso": "HK",
+        "imf": "532",
+        "cpi_headline": "M.532.PCPI_IX",
+        "cpi_core": "M.532.PCPIFE_IX",
+        "unemployment": "M.532.LUR_PT",
+        "policy_rate": "M.532.FPOLM_PA",
+    },
+    "KR": {
+        "iso": "KR",
+        "imf": "542",
+        "cpi_headline": "M.542.PCPI_IX",
+        "cpi_core": "M.542.PCPIFE_IX",
+        "unemployment": "M.542.LUR_PT",
+        "policy_rate": "M.542.FPOLM_PA",
+    },
+}
+
+IMF_QUARTERLY = {
+    "US": {"iso": "US", "imf": "111", "real_gdp_index": "Q.111.NGDP_R_SA_IX"},
+    "CA": {"iso": "CA", "imf": "156", "real_gdp_index": "Q.156.NGDP_R_SA_IX"},
+    "DE": {"iso": "DE", "imf": "134", "real_gdp_index": "Q.134.NGDP_R_SA_IX"},
+    "EA": {"iso": "EA", "imf": "U2",  "real_gdp_index": "Q.U2.NGDP_R_SA_IX"},
+    "CH": {"iso": "CH", "imf": "146", "real_gdp_index": "Q.146.NGDP_R_SA_IX"},
+    "JP": {"iso": "JP", "imf": "158", "real_gdp_index": "Q.158.NGDP_R_SA_IX"},
+    "CN": {"iso": "CN", "imf": "924", "real_gdp_index": "Q.924.NGDP_R_SA_IX"},
+    "HK": {"iso": "HK", "imf": "532", "real_gdp_index": "Q.532.NGDP_R_SA_IX"},
+    "KR": {"iso": "KR", "imf": "542", "real_gdp_index": "Q.542.NGDP_R_SA_IX"},
+}
 
 # =========================
 # Helpers: Google Sheets
@@ -199,6 +290,114 @@ def load_ofr_multifull(mnemonics: list[str], start_date: str) -> pd.DataFrame:
     out = pd.concat(frames, axis=1).sort_index()
     out = out[out.index >= pd.to_datetime(start_date)]
     return out
+
+# =========================
+# IMF (IFS) CompactData loader
+# =========================
+def _parse_imf_time_period(tp: str) -> pd.Timestamp:
+    """
+    IMF SDMX TIME_PERIOD examples (common in CompactData):
+      - Monthly: '2025-11' or '2025-11-01'
+      - Quarterly: '2025-Q3'
+      - Annual: '2025'
+    We normalize to a Timestamp for indexing.
+    """
+    tp = str(tp).strip()
+
+    # Quarterly: YYYY-Qn
+    if "Q" in tp and "-" in tp:
+        y, q = tp.split("-Q")
+        y = int(y)
+        q = int(q)
+        # Use quarter end as date index
+        month = q * 3
+        return pd.Timestamp(y, month, 1) + pd.offsets.MonthEnd(0)
+
+    # Monthly: YYYY-MM
+    if len(tp) == 7 and tp[4] == "-":
+        return pd.Timestamp(tp + "-01")
+
+    # Full date
+    if len(tp) == 10 and tp[4] == "-" and tp[7] == "-":
+        return pd.Timestamp(tp)
+
+    # Annual: YYYY
+    if len(tp) == 4 and tp.isdigit():
+        return pd.Timestamp(int(tp), 12, 31)
+
+    # Fallback
+    return pd.to_datetime(tp, errors="coerce")
+
+
+def imf_compact_series(
+    series_key: str,
+    dataset: str = IMF_DATASET,
+    start_period: str = "1990",
+    end_period: str | None = None,
+    timeout: int = 30,
+) -> pd.Series:
+    """
+    Fetch one IMF CompactData series (SDMX-JSON) and return pd.Series indexed by Timestamp.
+
+    Endpoint pattern:
+      https://dataservices.imf.org/REST/SDMX_JSON.svc/CompactData/{dataset}/{series_key}?startPeriod=...&endPeriod=...
+    :contentReference[oaicite:2]{index=2}
+    """
+    base = f"https://dataservices.imf.org/REST/SDMX_JSON.svc/CompactData/{dataset}/{series_key}"
+    params = {"startPeriod": start_period}
+    if end_period:
+        params["endPeriod"] = end_period
+
+    resp = requests.get(base, params=params, timeout=timeout)
+    resp.raise_for_status()
+    js = resp.json()
+
+    # Navigate SDMX-JSON structure
+    # Typically: js['CompactData']['DataSet']['Series']['Obs']
+    c = js.get("CompactData", {})
+    ds = c.get("DataSet", {})
+    series = ds.get("Series", None)
+
+    if series is None:
+        return pd.Series(dtype="float64")
+
+    # Sometimes Series is a list (multi-series) or dict (single series)
+    # Here we request a single key => dict expected, but we handle list defensively.
+    if isinstance(series, list):
+        # if multiple, take first (shouldn't happen with specific key, but safe)
+        series = series[0] if series else None
+        if series is None:
+            return pd.Series(dtype="float64")
+
+    obs = series.get("Obs", None)
+    if obs is None:
+        return pd.Series(dtype="float64")
+
+    # Obs can be dict (single observation) or list
+    if isinstance(obs, dict):
+        obs = [obs]
+
+    rows = []
+    for o in obs:
+        tp = o.get("@TIME_PERIOD")
+        val = o.get("@OBS_VALUE")
+        if tp is None or val is None:
+            continue
+        dt = _parse_imf_time_period(tp)
+        if pd.isna(dt):
+            continue
+        try:
+            v = float(val)
+        except Exception:
+            continue
+        rows.append((dt, v))
+
+    if not rows:
+        return pd.Series(dtype="float64")
+
+    s = pd.Series({d: v for d, v in rows}).sort_index()
+    s.index = pd.to_datetime(s.index)
+    return s
 
 
 # =========================
@@ -376,103 +575,163 @@ def update_weekly_ofr(sh):
     except Exception as e:
         print(f"⚠️ {tab}: OFR update failed: {e}")
 
-
 def update_monthly_rates(fred: Fred, sh):
+    """
+    IMF(IFS) monthly:
+      - Headline CPI index -> YoY/MoM (%)
+      - Core CPI index -> YoY/MoM (%)
+      - Unemployment rate -> level (%) 그대로
+      - Policy rate -> level (%) 그대로
+
+    Writes to: data-monthly
+    """
     tab = "data-monthly"
     ws = ensure_worksheet(sh, tab)
 
-    # target headers based on configured series
+    # 1) build headers
     cols = []
-    for item in MONTHLY_LEVEL_SERIES:
-        p = item["prefix"]
-        cols += [f"{p}_YoY", f"{p}_MoM"]
+    for k in IMF_MONTHLY.keys():
+        cols += [
+            f"{k}_CPI_YoY", f"{k}_CPI_MoM",
+            f"{k}_CoreCPI_YoY", f"{k}_CoreCPI_MoM",
+            f"{k}_Unemployment",
+            f"{k}_PolicyRate",
+        ]
     target_headers = ["Date"] + cols
 
     header, last_date = get_header_and_last_date(ws)
     if header != target_headers:
+        ws.clear()
         write_header(ws, target_headers)
 
+    # incremental append start_date
     start_date = pick_start_date(last_date, default_start="2000-01-01")
     print(f"📌 {tab}: start_date={start_date}")
 
+    # 2) pull & transform (need long history for YoY/MoM)
     combined = pd.DataFrame()
-    for item in MONTHLY_LEVEL_SERIES:
-        sid = item["series_id"]
-        prefix = item["prefix"]
+
+    for ccy, spec in IMF_MONTHLY.items():
         try:
-            lvl = fred_series(fred, sid, "1990-01-01")  # compute rates needs history
-            if lvl.empty:
-                continue
-            rates = build_monthly_rates(lvl, prefix)
-            combined = rates if combined.empty else combined.join(rates, how="outer")
-            time.sleep(0.15)
+            # CPI Headline
+            cpi = imf_compact_series(spec["cpi_headline"], start_period="1990")
+            if not cpi.empty:
+                cpi_rates = build_monthly_rates(cpi, f"{ccy}_CPI")  # => {ccy}_CPI_YoY/MoM
+                combined = cpi_rates if combined.empty else combined.join(cpi_rates, how="outer")
+
+            # CPI Core
+            core = imf_compact_series(spec["cpi_core"], start_period="1990")
+            if not core.empty:
+                core_rates = build_monthly_rates(core, f"{ccy}_CoreCPI")
+                combined = core_rates if combined.empty else combined.join(core_rates, how="outer")
+
+            # Unemployment (already %)
+            unrate = imf_compact_series(spec["unemployment"], start_period="1990")
+            if not unrate.empty:
+                tmp = unrate.to_frame(name=f"{ccy}_Unemployment")
+                combined = tmp if combined.empty else combined.join(tmp, how="outer")
+
+            # Policy rate (already %)
+            pr = imf_compact_series(spec["policy_rate"], start_period="1990")
+            if not pr.empty:
+                tmp = pr.to_frame(name=f"{ccy}_PolicyRate")
+                combined = tmp if combined.empty else combined.join(tmp, how="outer")
+
+            time.sleep(0.2)  # IMF API 예의상 간격
         except Exception as e:
-            print(f"⚠️ {tab} load/transform failed {sid}: {e}")
+            print(f"⚠️ {tab}: IMF load failed for {ccy}: {e}")
 
     if combined.empty:
         print(f"ℹ️ {tab}: nothing to write")
         return
 
-    # keep only rows >= start_date (incremental write)
+    # 3) filter rows to append
+    combined = combined.sort_index()
     combined = combined[combined.index >= pd.to_datetime(start_date)]
     if combined.empty:
         print(f"ℹ️ {tab}: no new rows after filtering")
         return
 
+    # 4) finalize dataframe for append
     combined.index.name = "Date"
-    combined = combined.reset_index()
-    combined["Date"] = pd.to_datetime(combined["Date"]).dt.strftime("%Y-%m-%d")
-    combined = combined[["Date"] + cols].fillna("")
-    n = append_rows(ws, combined.values.tolist())
+    out = combined.reset_index()
+
+    # monthly dates => YYYY-MM-DD (keep first day)
+    out["Date"] = pd.to_datetime(out["Date"], errors="coerce").dt.strftime("%Y-%m-%d")
+
+    # ensure all columns exist, order
+    for c in cols:
+        if c not in out.columns:
+            out[c] = pd.NA
+    out = out[["Date"] + cols].fillna("")
+
+    n = append_rows(ws, out.values.tolist())
     print(f"✅ {tab}: appended {n} rows")
 
-
 def update_quarterly_rates(fred: Fred, sh):
+    """
+    IMF(IFS) quarterly:
+      - Real GDP index (seasonally adjusted index) -> YoY/QoQ (%)
+
+    Writes to: data-quarterly
+    """
     tab = "data-quarterly"
     ws = ensure_worksheet(sh, tab)
 
     cols = []
-    for item in QUARTERLY_LEVEL_SERIES:
-        p = item["prefix"]
-        cols += [f"{p}_YoY", f"{p}_QoQ"]
+    for ccy in IMF_QUARTERLY.keys():
+        cols += [f"{ccy}_RealGDP_YoY", f"{ccy}_RealGDP_QoQ"]
     target_headers = ["Date"] + cols
 
     header, last_date = get_header_and_last_date(ws)
     if header != target_headers:
+        ws.clear()
         write_header(ws, target_headers)
 
     start_date = pick_start_date(last_date, default_start="1990-01-01")
     print(f"📌 {tab}: start_date={start_date}")
 
     combined = pd.DataFrame()
-    for item in QUARTERLY_LEVEL_SERIES:
-        sid = item["series_id"]
-        prefix = item["prefix"]
+
+    for ccy, spec in IMF_QUARTERLY.items():
         try:
-            lvl = fred_series(fred, sid, "1970-01-01")  # compute rates needs history
-            if lvl.empty:
+            gdp_ix = imf_compact_series(spec["real_gdp_index"], start_period="1970")
+            if gdp_ix.empty:
                 continue
-            rates = build_quarterly_rates(lvl, prefix)
+
+            rates = build_quarterly_rates(gdp_ix, f"{ccy}_RealGDP")
+            # build_quarterly_rates => {prefix}_YoY, {prefix}_QoQ
+            # 여기서 prefix가 {ccy}_RealGDP 이므로 원하는 컬럼명과 일치
             combined = rates if combined.empty else combined.join(rates, how="outer")
-            time.sleep(0.15)
+
+            time.sleep(0.2)
         except Exception as e:
-            print(f"⚠️ {tab} load/transform failed {sid}: {e}")
+            print(f"⚠️ {tab}: IMF load failed for {ccy}: {e}")
 
     if combined.empty:
         print(f"ℹ️ {tab}: nothing to write")
         return
 
+    combined = combined.sort_index()
     combined = combined[combined.index >= pd.to_datetime(start_date)]
     if combined.empty:
         print(f"ℹ️ {tab}: no new rows after filtering")
         return
 
     combined.index.name = "Date"
-    combined = combined.reset_index()
-    combined["Date"] = pd.to_datetime(combined["Date"]).dt.strftime("%Y-%m-%d")
-    combined = combined[["Date"] + cols].fillna("")
-    n = append_rows(ws, combined.values.tolist())
+    out = combined.reset_index()
+
+    # quarterly index in _parse_imf_time_period() -> quarter end date already
+    out["Date"] = pd.to_datetime(out["Date"], errors="coerce").dt.strftime("%Y-%m-%d")
+
+    for c in cols:
+        if c not in out.columns:
+            out[c] = pd.NA
+    out = out[["Date"] + cols].fillna("")
+
+    n = append_rows(ws, out.values.tolist())
     print(f"✅ {tab}: appended {n} rows")
+
 
 
 # =========================

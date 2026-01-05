@@ -329,20 +329,27 @@ def _parse_imf_time_period(tp: str) -> pd.Timestamp:
     return pd.to_datetime(tp, errors="coerce")
 
 
+from typing import Optional
+
 def imf_compact_series(
-    series_key: str,
+    freq: str,               # "M" or "Q"
+    ref_area: str,           # "US", "CA", "DE", "U2", ...
+    indicator: str,          # "PCPI_IX", "FPOLM_PA", ...
     dataset: str = IMF_DATASET,
     start_period: str = "1990",
     end_period: Optional[str] = None,
     timeout: int = 30,
 ) -> pd.Series:
     """
-    Fetch one IMF CompactData series (SDMX-JSON) and return pd.Series indexed by Timestamp.
-
-    Endpoint pattern:
-      https://dataservices.imf.org/REST/SDMX_JSON.svc/CompactData/{dataset}/{series_key}?startPeriod=...&endPeriod=...
+    IFS series key convention (common):
+      {FREQ}.{REF_AREA}.{INDICATOR}
+    Example:
+      M.US.PCPI_IX
+      Q.U2.NGDP_R_SA_IX
     """
+    series_key = f"{freq}.{ref_area}.{indicator}"
     base = f"https://dataservices.imf.org/REST/SDMX_JSON.svc/CompactData/{dataset}/{series_key}"
+
     params = {"startPeriod": start_period}
     if end_period:
         params["endPeriod"] = end_period
@@ -351,9 +358,8 @@ def imf_compact_series(
     resp.raise_for_status()
     js = resp.json()
 
-    c = js.get("CompactData", {})
-    ds = c.get("DataSet", {})
-    series = ds.get("Series", None)
+    ds = js.get("CompactData", {}).get("DataSet", {})
+    series = ds.get("Series")
 
     if series is None:
         return pd.Series(dtype="float64")
@@ -363,7 +369,7 @@ def imf_compact_series(
         if series is None:
             return pd.Series(dtype="float64")
 
-    obs = series.get("Obs", None)
+    obs = series.get("Obs")
     if obs is None:
         return pd.Series(dtype="float64")
 
@@ -391,6 +397,10 @@ def imf_compact_series(
     s = pd.Series({d: v for d, v in rows}).sort_index()
     s.index = pd.to_datetime(s.index)
     return s
+
+def _log_empty(ccy: str, freq: str, ref_area: str, indicator: str, s: pd.Series):
+    if s.empty:
+        print(f"⚠️ IMF EMPTY: {ccy} {freq}.{ref_area}.{indicator}")
 
 
 
@@ -570,26 +580,17 @@ def update_weekly_ofr(sh):
         print(f"⚠️ {tab}: OFR update failed: {e}")
 
 def update_monthly_rates(fred: Fred, sh):
-    """
-    IMF(IFS) monthly:
-      - Headline CPI index -> YoY/MoM (%)
-      - Core CPI index -> YoY/MoM (%)
-      - Unemployment rate -> level (%) 그대로
-      - Policy rate -> level (%) 그대로
-
-    Writes to: data-monthly
-    """
     tab = "data-monthly"
     ws = ensure_worksheet(sh, tab)
 
-    # 1) build headers
+    # headers
     cols = []
-    for k in IMF_MONTHLY.keys():
+    for ccy in IMF_COUNTRIES.keys():
         cols += [
-            f"{k}_CPI_YoY", f"{k}_CPI_MoM",
-            f"{k}_CoreCPI_YoY", f"{k}_CoreCPI_MoM",
-            f"{k}_Unemployment",
-            f"{k}_PolicyRate",
+            f"{ccy}_CPI_YoY", f"{ccy}_CPI_MoM",
+            f"{ccy}_CoreCPI_YoY", f"{ccy}_CoreCPI_MoM",
+            f"{ccy}_Unemployment",
+            f"{ccy}_PolicyRate",
         ]
     target_headers = ["Date"] + cols
 
@@ -598,62 +599,66 @@ def update_monthly_rates(fred: Fred, sh):
         ws.clear()
         write_header(ws, target_headers)
 
-    # incremental append start_date
     start_date = pick_start_date(last_date, default_start="2000-01-01")
     print(f"📌 {tab}: start_date={start_date}")
 
-    # 2) pull & transform (need long history for YoY/MoM)
     combined = pd.DataFrame()
 
-    for ccy, spec in IMF_MONTHLY.items():
+    for ccy, meta in IMF_COUNTRIES.items():
+        ref = meta["ref_area"]
+
         try:
-            # CPI Headline
-            cpi = imf_compact_series(spec["cpi_headline"], start_period="1990")
+            # CPI (index -> YoY/MoM)
+            cpi = imf_compact_series("M", ref, IMF_M_INDICATORS["CPI"], start_period="1990")
+            _log_empty(ccy, "M", ref, IMF_M_INDICATORS["CPI"], cpi)
             if not cpi.empty:
-                cpi_rates = build_monthly_rates(cpi, f"{ccy}_CPI")  # => {ccy}_CPI_YoY/MoM
-                combined = cpi_rates if combined.empty else combined.join(cpi_rates, how="outer")
+                rates = build_monthly_rates(cpi, f"{ccy}_CPI")
+                combined = rates if combined.empty else combined.join(rates, how="outer")
 
-            # CPI Core
-            core = imf_compact_series(spec["cpi_core"], start_period="1990")
+            # Core CPI (index -> YoY/MoM)
+            core = imf_compact_series("M", ref, IMF_M_INDICATORS["CoreCPI"], start_period="1990")
+            _log_empty(ccy, "M", ref, IMF_M_INDICATORS["CoreCPI"], core)
             if not core.empty:
-                core_rates = build_monthly_rates(core, f"{ccy}_CoreCPI")
-                combined = core_rates if combined.empty else combined.join(core_rates, how="outer")
+                rates = build_monthly_rates(core, f"{ccy}_CoreCPI")
+                combined = rates if combined.empty else combined.join(rates, how="outer")
 
-            # Unemployment (already %)
-            unrate = imf_compact_series(spec["unemployment"], start_period="1990")
-            if not unrate.empty:
-                tmp = unrate.to_frame(name=f"{ccy}_Unemployment")
+            # Unemployment (level %)
+            # China: 최근만
+            un_start = "2018" if ccy == "CN" else "1990"
+            un = imf_compact_series("M", ref, IMF_M_INDICATORS["Unemployment"], start_period=un_start)
+            _log_empty(ccy, "M", ref, IMF_M_INDICATORS["Unemployment"], un)
+            if not un.empty:
+                tmp = un.to_frame(name=f"{ccy}_Unemployment")
                 combined = tmp if combined.empty else combined.join(tmp, how="outer")
 
-            # Policy rate (already %)
-            pr = imf_compact_series(spec["policy_rate"], start_period="1990")
+            # Policy rate (level %)
+            # Germany = EA(U2) policy rate
+            pr_ref = DE_POLICY_REF_AREA_OVERRIDE if ccy == "DE" else ref
+            pr = imf_compact_series("M", pr_ref, IMF_M_INDICATORS["PolicyRate"], start_period="1990")
+            _log_empty(ccy, "M", pr_ref, IMF_M_INDICATORS["PolicyRate"], pr)
             if not pr.empty:
                 tmp = pr.to_frame(name=f"{ccy}_PolicyRate")
                 combined = tmp if combined.empty else combined.join(tmp, how="outer")
 
-            time.sleep(0.2)  # IMF API 예의상 간격
+            time.sleep(0.2)
+
         except Exception as e:
             print(f"⚠️ {tab}: IMF load failed for {ccy}: {e}")
 
     if combined.empty:
-        print(f"ℹ️ {tab}: nothing to write")
+        print(f"❌ {tab}: combined is empty. Most likely wrong REF_AREA/indicator keys.")
         return
 
-    # 3) filter rows to append
     combined = combined.sort_index()
     combined = combined[combined.index >= pd.to_datetime(start_date)]
     if combined.empty:
-        print(f"ℹ️ {tab}: no new rows after filtering")
+        print(f"ℹ️ {tab}: no new rows after filtering (start_date too recent?)")
         return
 
-    # 4) finalize dataframe for append
     combined.index.name = "Date"
     out = combined.reset_index()
-
-    # monthly dates => YYYY-MM-DD (keep first day)
     out["Date"] = pd.to_datetime(out["Date"], errors="coerce").dt.strftime("%Y-%m-%d")
 
-    # ensure all columns exist, order
     for c in cols:
         if c not in out.columns:
             out[c] = pd.NA
@@ -663,17 +668,11 @@ def update_monthly_rates(fred: Fred, sh):
     print(f"✅ {tab}: appended {n} rows")
 
 def update_quarterly_rates(fred: Fred, sh):
-    """
-    IMF(IFS) quarterly:
-      - Real GDP index (seasonally adjusted index) -> YoY/QoQ (%)
-
-    Writes to: data-quarterly
-    """
     tab = "data-quarterly"
     ws = ensure_worksheet(sh, tab)
 
     cols = []
-    for ccy in IMF_QUARTERLY.keys():
+    for ccy in IMF_COUNTRIES.keys():
         cols += [f"{ccy}_RealGDP_YoY", f"{ccy}_RealGDP_QoQ"]
     target_headers = ["Date"] + cols
 
@@ -687,35 +686,33 @@ def update_quarterly_rates(fred: Fred, sh):
 
     combined = pd.DataFrame()
 
-    for ccy, spec in IMF_QUARTERLY.items():
+    for ccy, meta in IMF_COUNTRIES.items():
+        ref = meta["ref_area"]
         try:
-            gdp_ix = imf_compact_series(spec["real_gdp_index"], start_period="1970")
+            gdp_ix = imf_compact_series("Q", ref, IMF_Q_INDICATORS["RealGDP"], start_period="1970")
+            _log_empty(ccy, "Q", ref, IMF_Q_INDICATORS["RealGDP"], gdp_ix)
             if gdp_ix.empty:
                 continue
 
             rates = build_quarterly_rates(gdp_ix, f"{ccy}_RealGDP")
-            # build_quarterly_rates => {prefix}_YoY, {prefix}_QoQ
-            # 여기서 prefix가 {ccy}_RealGDP 이므로 원하는 컬럼명과 일치
             combined = rates if combined.empty else combined.join(rates, how="outer")
-
             time.sleep(0.2)
+
         except Exception as e:
             print(f"⚠️ {tab}: IMF load failed for {ccy}: {e}")
 
     if combined.empty:
-        print(f"ℹ️ {tab}: nothing to write")
+        print(f"❌ {tab}: combined is empty. Most likely wrong REF_AREA/indicator keys.")
         return
 
     combined = combined.sort_index()
     combined = combined[combined.index >= pd.to_datetime(start_date)]
     if combined.empty:
-        print(f"ℹ️ {tab}: no new rows after filtering")
+        print(f"ℹ️ {tab}: no new rows after filtering (start_date too recent?)")
         return
 
     combined.index.name = "Date"
     out = combined.reset_index()
-
-    # quarterly index in _parse_imf_time_period() -> quarter end date already
     out["Date"] = pd.to_datetime(out["Date"], errors="coerce").dt.strftime("%Y-%m-%d")
 
     for c in cols:
@@ -725,6 +722,7 @@ def update_quarterly_rates(fred: Fred, sh):
 
     n = append_rows(ws, out.values.tolist())
     print(f"✅ {tab}: appended {n} rows")
+
 
 
 

@@ -333,7 +333,7 @@ def imf_compact_series(
     series_key: str,
     dataset: str = IMF_DATASET,
     start_period: str = "1990",
-    end_period: str | None = None,
+    end_period: Optional[str] = None,
     timeout: int = 30,
 ) -> pd.Series:
     """
@@ -341,7 +341,6 @@ def imf_compact_series(
 
     Endpoint pattern:
       https://dataservices.imf.org/REST/SDMX_JSON.svc/CompactData/{dataset}/{series_key}?startPeriod=...&endPeriod=...
-    :contentReference[oaicite:2]{index=2}
     """
     base = f"https://dataservices.imf.org/REST/SDMX_JSON.svc/CompactData/{dataset}/{series_key}"
     params = {"startPeriod": start_period}
@@ -352,8 +351,6 @@ def imf_compact_series(
     resp.raise_for_status()
     js = resp.json()
 
-    # Navigate SDMX-JSON structure
-    # Typically: js['CompactData']['DataSet']['Series']['Obs']
     c = js.get("CompactData", {})
     ds = c.get("DataSet", {})
     series = ds.get("Series", None)
@@ -361,10 +358,7 @@ def imf_compact_series(
     if series is None:
         return pd.Series(dtype="float64")
 
-    # Sometimes Series is a list (multi-series) or dict (single series)
-    # Here we request a single key => dict expected, but we handle list defensively.
     if isinstance(series, list):
-        # if multiple, take first (shouldn't happen with specific key, but safe)
         series = series[0] if series else None
         if series is None:
             return pd.Series(dtype="float64")
@@ -373,7 +367,6 @@ def imf_compact_series(
     if obs is None:
         return pd.Series(dtype="float64")
 
-    # Obs can be dict (single observation) or list
     if isinstance(obs, dict):
         obs = [obs]
 
@@ -398,6 +391,7 @@ def imf_compact_series(
     s = pd.Series({d: v for d, v in rows}).sort_index()
     s.index = pd.to_datetime(s.index)
     return s
+
 
 
 # =========================

@@ -441,6 +441,36 @@ def fetch_oecd_g20_cpi_rate(
     out["Date"] = pd.to_datetime(out["TIME_PERIOD"], errors="coerce")
     out = out.dropna(subset=["Date"]).sort_values("Date")
     return out
+def fetch_oecd_g20_cpi_rate_one(
+    area: str,                # e.g. "CHN"
+    start_period: str,        # "YYYY-MM"
+    end_period: Optional[str],
+    growth_code: str,         # try "GY", "GM", maybe fallback later
+    timeout: int = 120,
+) -> pd.Series:
+    key = f"{area}.M.N.CPI.PA._T.N.{growth_code}"
+    url = (
+        "https://sdmx.oecd.org/public/rest/data/"
+        "OECD.SDD.TPS,DSD_G20_PRICES@DF_G20_PRICES,/"
+        f"{key}"
+        f"?startPeriod={start_period}"
+        + (f"&endPeriod={end_period}" if end_period else "")
+        + "&dimensionAtObservation=AllDimensions"
+        + "&format=csvfilewithlabels"
+    )
+
+    r = requests.get(url, timeout=timeout)
+    r.raise_for_status()
+    df = pd.read_csv(StringIO(r.text))
+
+    tp_col = _find_col(df, ["TIME_PERIOD", "Time period", "TIME_PERIOD:Time period"])
+    val_col = _find_col(df, ["OBS_VALUE", "Value", "OBS_VALUE:Value"])
+
+    s = pd.to_numeric(df[val_col], errors="coerce")
+    dt = pd.to_datetime(df[tp_col].astype(str), errors="coerce")
+    out = pd.Series(s.values, index=dt).dropna().sort_index()
+    out.index.name = "Date"
+    return out
 
 
 # =========================
@@ -611,34 +641,52 @@ def update_monthly_rates(sh):
     combined = pd.DataFrame()
 
     # -------------------------
-    # 1) CPI YoY/MoM from OECD (GY/GM)
+    # 1) CPI YoY/MoM from OECD (country-by-country, so one failure doesn't kill all)
     # -------------------------
     try:
-        ref_areas = [OECD_LOC[c] for c in ccy_list]
-
-        df_yoy = fetch_oecd_g20_cpi_rate(ref_areas, start_period, end_period, growth_code="GY")
-        df_mom = fetch_oecd_g20_cpi_rate(ref_areas, start_period, end_period, growth_code="GM")
-
-        yoy_piv = df_yoy.pivot_table(index="Date", columns="AREA", values="OBS_VALUE", aggfunc="last").sort_index()
-        mom_piv = df_mom.pivot_table(index="Date", columns="AREA", values="OBS_VALUE", aggfunc="last").sort_index()
-
-        idx = yoy_piv.index.union(mom_piv.index).sort_values()
-        tmp = pd.DataFrame(index=idx)
+        tmp = pd.DataFrame()
 
         for ccy in ccy_list:
             area = OECD_LOC[ccy]
-            if area in yoy_piv.columns:
-                tmp[f"{ccy}_CPI_YoY"] = yoy_piv[area]
-            if area in mom_piv.columns:
-                tmp[f"{ccy}_CPI_MoM"] = mom_piv[area]
+
+            # YoY: GY (works as you tested)
+            try:
+                yoy = fetch_oecd_g20_cpi_rate_one(area, start_period, end_period, "GY")
+                if not yoy.empty:
+                    tmp = yoy.to_frame(name=f"{ccy}_CPI_YoY") if tmp.empty else tmp.join(
+                        yoy.to_frame(name=f"{ccy}_CPI_YoY"), how="outer"
+                    )
+            except Exception as e:
+                print(f"⚠️ {tab}: CPI YoY failed for {ccy}/{area}: {e}")
+
+            # MoM: first try GM; if empty/fails, try alternative codes (best-effort)
+            mom = pd.Series(dtype="float64")
+            for code in ["GM", "GP", "GR"]:   # GM이 비어있으면 데이터플로우에 따라 GP/GR 중 하나가 “previous period change”일 수 있음
+                try:
+                    s = fetch_oecd_g20_cpi_rate_one(area, start_period, end_period, code)
+                    if not s.empty:
+                        mom = s
+                        break
+                except Exception:
+                    continue
+
+            if not mom.empty:
+                tmp = mom.to_frame(name=f"{ccy}_CPI_MoM") if tmp.empty else tmp.join(
+                    mom.to_frame(name=f"{ccy}_CPI_MoM"), how="outer"
+                )
+            else:
+                print(f"⚠️ {tab}: CPI MoM empty for {ccy}/{area} (tried GM/GP/GR)")
+
+            time.sleep(0.1)
 
         if not tmp.empty:
             combined = tmp if combined.empty else combined.join(tmp, how="outer")
 
-        print(f"✅ {tab}: OECD CPI ok (rows={len(tmp)})")
+        print(f"✅ {tab}: OECD CPI ok (cols={0 if tmp.empty else tmp.shape[1]})")
 
     except Exception as e:
-        print(f"⚠️ {tab}: OECD CPI failed: {e}")
+        print(f"⚠️ {tab}: OECD CPI block failed: {e}")
+
 
     # -------------------------
     # 2) Unemployment from OECD LFS (level %)

@@ -1,20 +1,40 @@
 """
-FI-dashboard updater.py (consolidated)
+updater.py (re-written, end-to-end)
 
-- Daily: FRED (unchanged)
-- Weekly: OFR repo fails (unchanged)
-- Monthly:
-  - Headline CPI: OECD G20_PRICES (DF_G20_PRICES) -> YoY/MoM computed
-  - Unemployment rate: OECD LFS (DF_IALFS_UNE_M) -> level %
-  - Policy rate:
-      * Euro Area (EA) + Germany (DE): ECB Deposit Facility Rate (DFR) from ECB Data Portal API
-        -> daily series resampled to month-end (last)
-      * Others (US/CA/JP/CN/CH/KR): Bank of Korea ECOS table 902Y006 (monthly)
-  - Core CPI: NOT collected (by decision)
+What this script does
+---------------------
+1) data-daily   : FRED daily series (unchanged logic)
+2) data-weekly  : OFR repo fails weekly (unchanged logic)
+3) data-monthly :
+   - Headline CPI YoY/MoM from OECD DF_G20_PRICES (direct growth rates)
+       * YoY: ...GY
+       * MoM: ...GM
+   - Unemployment (%) from OECD LFS (DF_IALFS_UNE_M)
+   - Policy rate (%):
+       * Euro Area (EA) + Germany (DE): ECB Deposit Facility Rate (DFR), daily -> month-end(last)
+       * Others (US/CA/JP/CN/CH/KR): BOK ECOS table 902Y006, monthly (BOK_API_KEY)
+   - Core CPI: NOT collected (by decision)
 
-- Quarterly:
-  - Real GDP growth: OECD QNA expenditure growth (DF_QNA_EXPENDITURE_GROWTH_G20)
-    -> attempts to map YoY/QoQ if a dimension indicates it; otherwise fills QoQ only.
+4) data-quarterly:
+   - Real GDP growth from OECD DF_QNA_EXPENDITURE_GROWTH_G20
+     (attempts to map YoY/QoQ if a dimension indicates it; otherwise fills QoQ only)
+
+Key reliability fixes (vs previous version)
+------------------------------------------
+- OECD area column is not always "LOCATION"; it can be "REF_AREA" (now robustly detected).
+- ECOS TIME often arrives as YYYYMM; parser now supports YYYYMM and YYYYMMDD.
+- Monthly/Quarterly queries use a lookback window to avoid missing late revisions,
+  but append filtering still prevents duplicates.
+
+ENV (GitHub Secrets)
+--------------------
+Required:
+- FRED_API_KEY
+- GSHEET_ID
+- GOOGLE_SERVICE_ACCOUNT_JSON
+
+Optional (but recommended for policy rates outside EA/DE):
+- BOK_API_KEY   (ECOS API key)
 """
 
 import os
@@ -38,7 +58,7 @@ FRED_API_KEY = os.environ["FRED_API_KEY"]
 GSHEET_ID = os.environ["GSHEET_ID"]
 SERVICE_ACCOUNT_JSON = os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]
 
-# Optional (for policy rates outside EA/DE via BOK)
+# ECOS (Bank of Korea)
 BOK_API_KEY = os.environ.get("BOK_API_KEY", "")
 
 
@@ -46,7 +66,7 @@ BOK_API_KEY = os.environ.get("BOK_API_KEY", "")
 # CONFIG: What to store
 # =========================
 
-# 1) Daily: store levels (native daily) - UNCHANGED
+# 1) Daily: store levels (native daily)
 DAILY_FRED_SERIES = {
     "RPONTTLD": "Repo_Volume",
     "SOFR": "SOFR",
@@ -66,7 +86,7 @@ DAILY_FRED_SERIES = {
     "DGS30": "US_30Y",
 }
 
-# 2) Weekly: OFR (native weekly) - UNCHANGED
+# 2) Weekly: OFR (native weekly)
 WEEKLY_OFR_MNEMONICS = {
     "NYPD-PD_AFtD_T-A": "UST_fails_to_deliver",
     "NYPD-PD_AFtD_AG-A": "AgencyGSE_fails_to_deliver",
@@ -74,13 +94,13 @@ WEEKLY_OFR_MNEMONICS = {
     "NYPD-PD_AFtD_OMBS-A": "OtherMBS_fails_to_deliver",
 }
 
-# 3) Monthly: OECD CPI + OECD Unemployment + (ECB/ECOS) policy rate
-#    Core CPI not collected.
+# 3) Monthly / Quarterly countries list
+# Dashboard currency codes -> OECD codes
 OECD_LOC = {
     "US": "USA",
     "CA": "CAN",
     "DE": "DEU",
-    "EA": "EA20",   # consistent with your QNA URL using EA20
+    "EA": "EA20",
     "CH": "CHE",
     "JP": "JPN",
     "CN": "CHN",
@@ -88,7 +108,7 @@ OECD_LOC = {
     "KR": "KOR",
 }
 
-# ECOS 902Y006 supports (commonly): US/CA/JP/CN/CH/KR
+# ECOS policy rate (monthly)
 ECOS_POLICY_STAT_CODE = "902Y006"
 ECOS_POLICY_ITEM = {
     "US": "US",
@@ -99,10 +119,10 @@ ECOS_POLICY_ITEM = {
     "KR": "KR",
 }
 
-# ECB DFR (Deposit Facility Rate) via ECB Data Portal API
+# ECB DFR via ECB Data Portal API (EDP)
 ECB_BASE = "https://data-api.ecb.europa.eu/service/data"
 ECB_DFR_FLOW = "FM"
-ECB_DFR_KEY = "FM.D.U2.EUR.4F.KR.DFR.LEV"  # DFR level daily
+ECB_DFR_KEY = "FM.D.U2.EUR.4F.KR.DFR.LEV"  # Deposit facility rate level (daily)
 
 
 # =========================
@@ -167,7 +187,68 @@ def pick_start_date(last_date_str: Optional[str], default_start: str) -> str:
 
 
 # =========================
-# Helpers: FRED transforms
+# Time period parsing
+# =========================
+def _tp_to_timestamp(tp: str) -> pd.Timestamp:
+    tp = str(tp).strip()
+
+    # ECOS monthly: YYYYMM
+    if len(tp) == 6 and tp.isdigit():
+        y = int(tp[:4]); m = int(tp[4:6])
+        return pd.Timestamp(y, m, 1)
+
+    # ECOS daily: YYYYMMDD
+    if len(tp) == 8 and tp.isdigit():
+        y = int(tp[:4]); m = int(tp[4:6]); d = int(tp[6:8])
+        return pd.Timestamp(y, m, d)
+
+    # monthly: YYYY-MM
+    if len(tp) == 7 and tp[4] == "-":
+        return pd.Timestamp(tp + "-01")
+
+    # quarterly: YYYY-Qn
+    if "-Q" in tp:
+        y, q = tp.split("-Q")
+        y = int(y); q = int(q)
+        month = q * 3
+        return pd.Timestamp(y, month, 1) + pd.offsets.MonthEnd(0)
+
+    # full date or fallback
+    return pd.to_datetime(tp, errors="coerce")
+
+
+# =========================
+# Query window helpers (avoid “0 rows” due to revisions / partial periods)
+# =========================
+def monthly_query_start(last_date: Optional[str], default_start: str = "2000-01", lookback_months: int = 3) -> str:
+    """
+    Returns YYYY-MM. Uses lookback to reduce the chance of missing revisions.
+    """
+    if not last_date:
+        return default_start
+    d = pd.to_datetime(last_date, errors="coerce")
+    if pd.isna(d):
+        return default_start
+    d2 = (d - pd.DateOffset(months=lookback_months)).replace(day=1)
+    return d2.strftime("%Y-%m")
+
+
+def quarterly_query_start(last_date: Optional[str], default_start: str = "1990-Q1", lookback_quarters: int = 2) -> str:
+    """
+    Returns YYYY-Qn. Uses lookback to reduce the chance of missing revisions.
+    """
+    if not last_date:
+        return default_start
+    d = pd.to_datetime(last_date, errors="coerce")
+    if pd.isna(d):
+        return default_start
+    d2 = d - pd.DateOffset(months=3 * lookback_quarters)
+    q = ((d2.month - 1) // 3) + 1
+    return f"{d2.year}-Q{q}"
+
+
+# =========================
+# Helpers: FRED
 # =========================
 def fred_series(fred: Fred, series_id: str, start_date: str) -> pd.Series:
     s = fred.get_series(series_id, observation_start=start_date)
@@ -177,19 +258,8 @@ def fred_series(fred: Fred, series_id: str, start_date: str) -> pd.Series:
     return s.sort_index()
 
 
-def pct_change(series: pd.Series, periods: int) -> pd.Series:
-    return series.pct_change(periods) * 100.0
-
-
-def build_monthly_rates(level: pd.Series, prefix: str) -> pd.DataFrame:
-    df = pd.DataFrame(index=level.index)
-    df[f"{prefix}_YoY"] = pct_change(level, 12)
-    df[f"{prefix}_MoM"] = pct_change(level, 1)
-    return df
-
-
 # =========================
-# OFR loader (weekly) - UNCHANGED
+# OFR loader (weekly)
 # =========================
 def load_ofr_multifull(mnemonics: list[str], start_date: str) -> pd.DataFrame:
     url = "https://data.financialresearch.gov/v1/series/multifull"
@@ -227,50 +297,23 @@ def _find_col(df: pd.DataFrame, candidates: list[str]) -> str:
     raise ValueError(f"column not found. candidates={candidates}, columns={list(df.columns)}")
 
 
-def _tp_to_timestamp(tp: str) -> pd.Timestamp:
-    tp = str(tp).strip()
-    # monthly: YYYY-MM
-    if len(tp) == 7 and tp[4] == "-":
-        return pd.Timestamp(tp + "-01")
-    # quarterly: YYYY-Qn
-    if "-Q" in tp:
-        y, q = tp.split("-Q")
-        y = int(y); q = int(q)
-        month = q * 3
-        return pd.Timestamp(y, month, 1) + pd.offsets.MonthEnd(0)
-    # full date
-    return pd.to_datetime(tp, errors="coerce")
+def _find_area_col(df: pd.DataFrame) -> str:
+    # OECD CSV: REF_AREA is common; sometimes LOCATION
+    for cand in [
+        "REF_AREA",
+        "Reference area",
+        "Ref area",
+        "LOCATION",
+        "Location",
+        "REF_AREA:Reference area",
+        "LOCATION:Location",
+    ]:
+        if cand in df.columns:
+            return cand
+    raise ValueError(f"area column not found. columns={list(df.columns)}")
 
 
-def _monthly_start_period(last_date: Optional[str], default_start: str = "2000-01") -> str:
-    """
-    Returns startPeriod in YYYY-MM for OECD monthly endpoints.
-    We use last_date + 1 day, then take YYYY-MM.
-    """
-    if not last_date:
-        return default_start
-    d0 = pd.to_datetime(last_date, errors="coerce")
-    if pd.isna(d0):
-        return default_start
-    d0 = d0 + pd.Timedelta(days=1)
-    return d0.strftime("%Y-%m")
-
-
-def _quarterly_start_period(last_date: Optional[str], default_start: str = "1990-Q1") -> str:
-    """
-    Returns startPeriod in YYYY-Qn.
-    """
-    if not last_date:
-        return default_start
-    d0 = pd.to_datetime(last_date, errors="coerce")
-    if pd.isna(d0):
-        return default_start
-    d0 = d0 + pd.Timedelta(days=1)
-    q = ((d0.month - 1) // 3) + 1
-    return f"{d0.year}-Q{q}"
-
-
-def oecd_get_csv(url: str, timeout: int = 90) -> pd.DataFrame:
+def oecd_get_csv(url: str, timeout: int = 120) -> pd.DataFrame:
     resp = requests.get(url, timeout=timeout)
     resp.raise_for_status()
     return pd.read_csv(StringIO(resp.text))
@@ -278,7 +321,7 @@ def oecd_get_csv(url: str, timeout: int = 90) -> pd.DataFrame:
 
 def ecb_get_series_csv(flow: str, key: str, start_period: str, end_period: Optional[str] = None, timeout: int = 60) -> pd.Series:
     """
-    ECB Data Portal SDMX API (CSV) -> Series
+    ECB Data Portal SDMX API (CSV) -> Series(Date index)
     """
     url = f"{ECB_BASE}/{flow}/{key}?startPeriod={start_period}&format=csvfilewithlabels"
     if end_period:
@@ -288,12 +331,11 @@ def ecb_get_series_csv(flow: str, key: str, start_period: str, end_period: Optio
     r.raise_for_status()
     df = pd.read_csv(StringIO(r.text))
 
-    tp_col = _find_col(df, ["TIME_PERIOD", "Time period"])
-    val_col = _find_col(df, ["OBS_VALUE", "Value"])
+    tp_col = _find_col(df, ["TIME_PERIOD", "Time period", "TIME_PERIOD:Time period"])
+    val_col = _find_col(df, ["OBS_VALUE", "Value", "OBS_VALUE:Value"])
 
     df[tp_col] = df[tp_col].astype(str)
     df[val_col] = pd.to_numeric(df[val_col], errors="coerce")
-
     df["_dt"] = pd.to_datetime(df[tp_col], errors="coerce")
     df = df.dropna(subset=["_dt", val_col]).sort_values("_dt")
 
@@ -341,7 +383,7 @@ def ecos_stat_search(
         v = row.get("DATA_VALUE")
         if not t or v is None:
             continue
-        dt = _tp_to_timestamp(t)  # "YYYYMM" also parses
+        dt = _tp_to_timestamp(t)
         if pd.isna(dt):
             continue
         try:
@@ -356,6 +398,49 @@ def ecos_stat_search(
     s = pd.Series({d: v for d, v in out}).sort_index()
     s.index = pd.to_datetime(s.index)
     return s
+
+
+def fetch_oecd_g20_cpi_rate(
+    ref_areas: list[str],
+    start_period: str,
+    end_period: Optional[str],
+    growth_code: str,  # "GY" (YoY) or "GM" (MoM)
+    timeout: int = 120,
+) -> pd.DataFrame:
+    """
+    OECD DF_G20_PRICES direct CPI growth rates:
+      - YoY: ...GY
+      - MoM: ...GM
+    Example key for China YoY: CHN.M.N.CPI.PA._T.N.GY
+    """
+    areas = "+".join(ref_areas)
+    key = f"{areas}.M.N.CPI.PA._T.N.{growth_code}"
+
+    url = (
+        "https://sdmx.oecd.org/public/rest/data/"
+        "OECD.SDD.TPS,DSD_G20_PRICES@DF_G20_PRICES,/"
+        f"{key}"
+        f"?startPeriod={start_period}"
+        + (f"&endPeriod={end_period}" if end_period else "")
+        + "&dimensionAtObservation=AllDimensions"
+        + "&format=csvfilewithlabels"
+    )
+
+    r = requests.get(url, timeout=timeout)
+    r.raise_for_status()
+    df = pd.read_csv(StringIO(r.text))
+
+    tp_col = _find_col(df, ["TIME_PERIOD", "Time period", "TIME_PERIOD:Time period"])
+    val_col = _find_col(df, ["OBS_VALUE", "Value", "OBS_VALUE:Value"])
+    area_col = _find_area_col(df)
+
+    out = df[[tp_col, val_col, area_col]].copy()
+    out.columns = ["TIME_PERIOD", "OBS_VALUE", "AREA"]
+    out["TIME_PERIOD"] = out["TIME_PERIOD"].astype(str)
+    out["OBS_VALUE"] = pd.to_numeric(out["OBS_VALUE"], errors="coerce")
+    out["Date"] = pd.to_datetime(out["TIME_PERIOD"], errors="coerce")
+    out = out.dropna(subset=["Date"]).sort_values("Date")
+    return out
 
 
 # =========================
@@ -423,7 +508,6 @@ def update_daily(fred, sh):
 
             tmp = s.to_frame(name=col)
             df_pulled = tmp if df_pulled.empty else df_pulled.join(tmp, how="outer")
-
             time.sleep(0.15)
         except Exception as e:
             print(f"⚠️ DAILY load failed: {sid} ({e})")
@@ -447,7 +531,6 @@ def update_daily(fred, sh):
     df_out = df_merged.reset_index()
     if "Date" not in df_out.columns and "index" in df_out.columns:
         df_out = df_out.rename(columns={"index": "Date"})
-
     if "Date" not in df_out.columns:
         raise ValueError("Internal error: Date column missing after reset_index().")
 
@@ -480,8 +563,8 @@ def update_weekly_ofr(sh):
         if df.empty:
             print(f"ℹ️ {tab}: no new rows")
             return
-        df = df.rename(columns=WEEKLY_OFR_MNEMONICS)
 
+        df = df.rename(columns=WEEKLY_OFR_MNEMONICS)
         df.index.name = "Date"
         df = df.reset_index()
         df["Date"] = pd.to_datetime(df["Date"]).dt.strftime("%Y-%m-%d")
@@ -492,14 +575,14 @@ def update_weekly_ofr(sh):
         print(f"⚠️ {tab}: OFR update failed: {e}")
 
 
-def update_monthly_rates(fred: Fred, sh):
+def update_monthly_rates(sh):
     """
     Monthly:
-      - CPI headline: OECD G20_PRICES -> YoY/MoM
-      - Unemployment: OECD LFS -> level %
-      - Policy rate:
+      - CPI YoY/MoM: OECD DF_G20_PRICES direct growth rates (GY/GM)
+      - Unemployment (%): OECD LFS
+      - Policy rate (%):
           EA, DE: ECB DFR daily -> month-end last
-          Others: ECOS 902Y006 (where available)
+          Others: ECOS 902Y006 monthly (if BOK_API_KEY available)
       - Core CPI: not collected
     """
     tab = "data-monthly"
@@ -507,7 +590,6 @@ def update_monthly_rates(fred: Fred, sh):
 
     ccy_list = list(OECD_LOC.keys())
 
-    # CoreCPI removed
     cols = []
     for ccy in ccy_list:
         cols += [
@@ -522,115 +604,107 @@ def update_monthly_rates(fred: Fred, sh):
         ws.clear()
         write_header(ws, target_headers)
 
-    start_period = _monthly_start_period(last_date, default_start="2000-01")
-    print(f"📌 {tab}: startPeriod={start_period}")
+    start_period = monthly_query_start(last_date, default_start="2000-01", lookback_months=3)
+    end_period = pd.Timestamp.today().strftime("%Y-%m")
+    print(f"📌 {tab}: startPeriod={start_period} (lookback), endPeriod={end_period}")
 
     combined = pd.DataFrame()
 
     # -------------------------
-    # 1) Headline CPI: OECD G20_PRICES
-    # Your pattern: /CHN.M...PA...?
-    # We expand to multiple locations using "+".
+    # 1) CPI YoY/MoM from OECD (GY/GM)
     # -------------------------
     try:
-        locs = "+".join([OECD_LOC[c] for c in ccy_list])
-        url_cpi = (
-            "https://sdmx.oecd.org/public/rest/data/"
-            "OECD.SDD.TPS,DSD_G20_PRICES@DF_G20_PRICES"
-            f",/{locs}.M...PA...?"
-            f"startPeriod={start_period}"
-            "&dimensionAtObservation=AllDimensions"
-            "&format=csvfilewithlabels"
-        )
-        df = oecd_get_csv(url_cpi, timeout=120)
+        ref_areas = [OECD_LOC[c] for c in ccy_list]
 
-        tp_col = _find_col(df, ["TIME_PERIOD", "Time period"])
-        val_col = _find_col(df, ["OBS_VALUE", "Value"])
-        loc_col = _find_col(df, ["LOCATION", "Location"])
+        df_yoy = fetch_oecd_g20_cpi_rate(ref_areas, start_period, end_period, growth_code="GY")
+        df_mom = fetch_oecd_g20_cpi_rate(ref_areas, start_period, end_period, growth_code="GM")
 
-        df[tp_col] = df[tp_col].astype(str)
-        df[val_col] = pd.to_numeric(df[val_col], errors="coerce")
-        df["_dt"] = df[tp_col].apply(_tp_to_timestamp)
-        df = df.dropna(subset=["_dt"])
+        yoy_piv = df_yoy.pivot_table(index="Date", columns="AREA", values="OBS_VALUE", aggfunc="last").sort_index()
+        mom_piv = df_mom.pivot_table(index="Date", columns="AREA", values="OBS_VALUE", aggfunc="last").sort_index()
 
-        piv = df.pivot_table(index="_dt", columns=loc_col, values=val_col, aggfunc="last").sort_index()
+        idx = yoy_piv.index.union(mom_piv.index).sort_values()
+        tmp = pd.DataFrame(index=idx)
 
         for ccy in ccy_list:
-            loc = OECD_LOC[ccy]
-            if loc not in piv.columns:
-                continue
-            level = piv[loc].dropna()
-            if level.empty:
-                continue
-            rates = build_monthly_rates(level, f"{ccy}_CPI")
-            combined = rates if combined.empty else combined.join(rates, how="outer")
+            area = OECD_LOC[ccy]
+            if area in yoy_piv.columns:
+                tmp[f"{ccy}_CPI_YoY"] = yoy_piv[area]
+            if area in mom_piv.columns:
+                tmp[f"{ccy}_CPI_MoM"] = mom_piv[area]
+
+        if not tmp.empty:
+            combined = tmp if combined.empty else combined.join(tmp, how="outer")
+
+        print(f"✅ {tab}: OECD CPI ok (rows={len(tmp)})")
 
     except Exception as e:
         print(f"⚠️ {tab}: OECD CPI failed: {e}")
 
     # -------------------------
-    # 2) Unemployment: OECD LFS
-    # Your URL:
-    #   .../DSD_LFS@DF_IALFS_UNE_M,/..._Z.Y._T.Y_GE15..M?startPeriod=...
-    # We filter to our needed LOCATION codes after download.
+    # 2) Unemployment from OECD LFS (level %)
     # -------------------------
     try:
         url_unemp = (
             "https://sdmx.oecd.org/public/rest/data/"
             "OECD.SDD.TPS,DSD_LFS@DF_IALFS_UNE_M"
             ",/..._Z.Y._T.Y_GE15..M?"
-            f"startPeriod={start_period}"
+            f"startPeriod={start_period}&endPeriod={end_period}"
             "&dimensionAtObservation=AllDimensions"
             "&format=csvfilewithlabels"
         )
+
         dfu = oecd_get_csv(url_unemp, timeout=180)
 
-        tp_col = _find_col(dfu, ["TIME_PERIOD", "Time period"])
-        val_col = _find_col(dfu, ["OBS_VALUE", "Value"])
-        loc_col = _find_col(dfu, ["LOCATION", "Location"])
+        tp_col = _find_col(dfu, ["TIME_PERIOD", "Time period", "TIME_PERIOD:Time period"])
+        val_col = _find_col(dfu, ["OBS_VALUE", "Value", "OBS_VALUE:Value"])
+        area_col = _find_area_col(dfu)
 
         dfu[tp_col] = dfu[tp_col].astype(str)
         dfu[val_col] = pd.to_numeric(dfu[val_col], errors="coerce")
-        dfu["_dt"] = dfu[tp_col].apply(_tp_to_timestamp)
-        dfu = dfu.dropna(subset=["_dt"])
+        dfu["Date"] = pd.to_datetime(dfu[tp_col], errors="coerce")
+        dfu = dfu.dropna(subset=["Date"])
 
-        keep_locs = set(OECD_LOC.values())
-        dfu = dfu[dfu[loc_col].isin(keep_locs)]
+        keep_areas = set(OECD_LOC.values())
+        dfu = dfu[dfu[area_col].isin(keep_areas)]
 
-        piv = dfu.pivot_table(index="_dt", columns=loc_col, values=val_col, aggfunc="last").sort_index()
+        piv = dfu.pivot_table(index="Date", columns=area_col, values=val_col, aggfunc="last").sort_index()
 
         tmp = pd.DataFrame(index=piv.index)
         for ccy in ccy_list:
-            loc = OECD_LOC[ccy]
-            if loc in piv.columns:
-                tmp[f"{ccy}_Unemployment"] = piv[loc]
+            area = OECD_LOC[ccy]
+            if area in piv.columns:
+                tmp[f"{ccy}_Unemployment"] = piv[area]
 
         if not tmp.empty:
             combined = tmp if combined.empty else combined.join(tmp, how="outer")
+
+        print(f"✅ {tab}: OECD Unemployment ok (rows={len(tmp)})")
 
     except Exception as e:
         print(f"⚠️ {tab}: OECD Unemployment failed: {e}")
 
     # -------------------------
-    # 3) Policy Rate
-    # 3-1) EA & DE: ECB DFR (daily -> month-end last)
+    # 3) Policy rate
+    # 3-1) EA & DE: ECB DFR daily -> month-end last
     # -------------------------
     try:
-        # For ECB daily, startPeriod is safer as YYYY-MM-DD
-        d0 = f"{start_period}-01" if len(start_period) == 7 else start_period
-        dfr_daily = ecb_get_series_csv(ECB_DFR_FLOW, ECB_DFR_KEY, start_period=d0, timeout=60)
+        # DFR daily expects YYYY-MM-DD
+        d0 = f"{start_period}-01"
+        dfr_daily = ecb_get_series_csv(ECB_DFR_FLOW, ECB_DFR_KEY, start_period=d0, end_period=None, timeout=60)
 
         if not dfr_daily.empty:
             dfr_m = dfr_daily.resample("M").last()
             tmp = pd.DataFrame(index=dfr_m.index)
             tmp["EA_PolicyRate"] = dfr_m
-            tmp["DE_PolicyRate"] = dfr_m  # Germany uses euro policy rate
+            tmp["DE_PolicyRate"] = dfr_m
             combined = tmp if combined.empty else combined.join(tmp, how="outer")
+
+        print(f"✅ {tab}: ECB DFR ok (rows={len(dfr_daily)})")
 
     except Exception as e:
         print(f"⚠️ {tab}: ECB DFR failed: {e}")
 
-    # 3-2) Others: ECOS 902Y006 (monthly)
+    # 3-2) Others: ECOS 902Y006 monthly (if BOK_API_KEY)
     try:
         if BOK_API_KEY:
             ecos_start = start_period.replace("-", "")  # YYYYMM
@@ -647,12 +721,16 @@ def update_monthly_rates(fred: Fred, sh):
                     item_code1=item1,
                 )
                 if s.empty:
+                    print(f"⚠️ {tab}: ECOS policy EMPTY for {ccy} item={item1}")
                     continue
                 col = f"{ccy}_PolicyRate"
                 tmp = s.to_frame(name=col) if tmp.empty else tmp.join(s.to_frame(name=col), how="outer")
+                time.sleep(0.1)
 
             if not tmp.empty:
                 combined = tmp if combined.empty else combined.join(tmp, how="outer")
+
+            print(f"✅ {tab}: ECOS policy ok (cols={0 if tmp.empty else tmp.shape[1]})")
         else:
             print(f"ℹ️ {tab}: BOK_API_KEY missing; skipping ECOS policy rates.")
 
@@ -663,25 +741,25 @@ def update_monthly_rates(fred: Fred, sh):
     # Finalize / append
     # -------------------------
     if combined.empty:
-        print(f"❌ {tab}: combined is empty.")
+        print(f"❌ {tab}: combined is empty (no sources succeeded).")
         return
 
     combined = combined.sort_index()
 
-    # filter strictly after last_date to avoid duplicates
+    # Append only rows strictly after last_date
     if last_date:
         dt0 = pd.to_datetime(last_date, errors="coerce") + pd.Timedelta(days=1)
         combined = combined[combined.index >= dt0]
 
     if combined.empty:
-        print(f"ℹ️ {tab}: no new rows")
+        print(f"ℹ️ {tab}: no new rows after filtering (already up to date).")
         return
 
     combined.index.name = "Date"
     out = combined.reset_index()
     out["Date"] = pd.to_datetime(out["Date"], errors="coerce").dt.strftime("%Y-%m-%d")
 
-    # ensure all columns exist
+    # Ensure all columns exist
     for c in cols:
         if c not in out.columns:
             out[c] = pd.NA
@@ -691,11 +769,11 @@ def update_monthly_rates(fred: Fred, sh):
     print(f"✅ {tab}: appended {n} rows")
 
 
-def update_quarterly_rates(fred: Fred, sh):
+def update_quarterly_rates(sh):
     """
     Quarterly:
       - Real GDP growth from OECD DF_QNA_EXPENDITURE_GROWTH_G20
-      - Attempts to map YoY/QoQ via an available dimension; otherwise fills QoQ only.
+      - Attempts to map YoY/QoQ via a dimension; otherwise fills QoQ only.
     """
     tab = "data-quarterly"
     ws = ensure_worksheet(sh, tab)
@@ -712,13 +790,13 @@ def update_quarterly_rates(fred: Fred, sh):
         ws.clear()
         write_header(ws, target_headers)
 
-    start_period = _quarterly_start_period(last_date, default_start="1990-Q1")
-    print(f"📌 {tab}: startPeriod={start_period}")
+    start_period = quarterly_query_start(last_date, default_start="1990-Q1", lookback_quarters=2)
+    print(f"📌 {tab}: startPeriod={start_period} (lookback)")
 
     combined = pd.DataFrame()
 
     try:
-        # Your URL (kept as-is)
+        # Your original URL kept (broad country coverage). We'll filter down to our areas after download.
         url = (
             "https://sdmx.oecd.org/public/rest/data/"
             "OECD.SDD.NAD,DSD_NAMAIN1@DF_QNA_EXPENDITURE_GROWTH_G20"
@@ -727,20 +805,20 @@ def update_quarterly_rates(fred: Fred, sh):
             "&dimensionAtObservation=AllDimensions"
             "&format=csvfilewithlabels"
         )
+
         df = oecd_get_csv(url, timeout=180)
 
-        tp_col = _find_col(df, ["TIME_PERIOD", "Time period"])
-        val_col = _find_col(df, ["OBS_VALUE", "Value"])
-        loc_col = _find_col(df, ["LOCATION", "Location"])
+        tp_col = _find_col(df, ["TIME_PERIOD", "Time period", "TIME_PERIOD:Time period"])
+        val_col = _find_col(df, ["OBS_VALUE", "Value", "OBS_VALUE:Value"])
+        area_col = _find_area_col(df)
 
         df[tp_col] = df[tp_col].astype(str)
         df[val_col] = pd.to_numeric(df[val_col], errors="coerce")
-        df["_dt"] = df[tp_col].apply(_tp_to_timestamp)
-        df = df.dropna(subset=["_dt"])
+        df["Date"] = df[tp_col].apply(_tp_to_timestamp)
+        df = df.dropna(subset=["Date"])
 
-        # Keep only our locations
-        keep_locs = set(OECD_LOC.values())
-        df = df[df[loc_col].isin(keep_locs)]
+        keep_areas = set(OECD_LOC.values())
+        df = df[df[area_col].isin(keep_areas)]
 
         # Find a dimension that might indicate YoY vs QoQ
         rate_dim = None
@@ -751,7 +829,6 @@ def update_quarterly_rates(fred: Fred, sh):
 
         def _map_kind(k: str) -> Optional[str]:
             kl = str(k).lower()
-            # heuristics
             if "yoy" in kl or "year" in kl or "y/y" in kl or "a/a" in kl:
                 return "YoY"
             if "qoq" in kl or "quarter" in kl or "q/q" in kl:
@@ -763,23 +840,25 @@ def update_quarterly_rates(fred: Fred, sh):
                 kind = _map_kind(key)
                 if kind is None:
                     continue
-                piv = dfg.pivot_table(index="_dt", columns=loc_col, values=val_col, aggfunc="last").sort_index()
+                piv = dfg.pivot_table(index="Date", columns=area_col, values=val_col, aggfunc="last").sort_index()
                 tmp = pd.DataFrame(index=piv.index)
                 for ccy in ccy_list:
-                    loc = OECD_LOC[ccy]
-                    if loc in piv.columns:
-                        tmp[f"{ccy}_RealGDP_{kind}"] = piv[loc]
+                    area = OECD_LOC[ccy]
+                    if area in piv.columns:
+                        tmp[f"{ccy}_RealGDP_{kind}"] = piv[area]
                 if not tmp.empty:
                     combined = tmp if combined.empty else combined.join(tmp, how="outer")
         else:
-            # no dimension found -> treat as QoQ by convention
-            piv = df.pivot_table(index="_dt", columns=loc_col, values=val_col, aggfunc="last").sort_index()
+            # No dimension found -> treat as QoQ by convention (best-effort)
+            piv = df.pivot_table(index="Date", columns=area_col, values=val_col, aggfunc="last").sort_index()
             tmp = pd.DataFrame(index=piv.index)
             for ccy in ccy_list:
-                loc = OECD_LOC[ccy]
-                if loc in piv.columns:
-                    tmp[f"{ccy}_RealGDP_QoQ"] = piv[loc]
+                area = OECD_LOC[ccy]
+                if area in piv.columns:
+                    tmp[f"{ccy}_RealGDP_QoQ"] = piv[area]
             combined = tmp
+
+        print(f"✅ {tab}: OECD GDP growth ok (rows={0 if combined.empty else len(combined)})")
 
     except Exception as e:
         print(f"⚠️ {tab}: OECD GDP growth failed: {e}")
@@ -795,7 +874,7 @@ def update_quarterly_rates(fred: Fred, sh):
         combined = combined[combined.index >= dt0]
 
     if combined.empty:
-        print(f"ℹ️ {tab}: no new rows")
+        print(f"ℹ️ {tab}: no new rows after filtering (already up to date).")
         return
 
     combined.index.name = "Date"
@@ -821,8 +900,8 @@ def main():
 
     update_daily(fred, sh)
     update_weekly_ofr(sh)
-    update_monthly_rates(fred, sh)
-    update_quarterly_rates(fred, sh)
+    update_monthly_rates(sh)
+    update_quarterly_rates(sh)
 
     print("\n🎉 All updates completed.")
 

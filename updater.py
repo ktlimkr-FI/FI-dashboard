@@ -335,12 +335,31 @@ def update_daily(fred, sh):
             df_merged[c] = pd.NA
     df_merged = df_merged[headers[1:]]
 
-    df_out = df_merged.reset_index()
+
+    
+    # =========================
+    # (9) BUILD OUTPUT (Date 강제 생성 – reset_index 사용 안 함)
+    # =========================
+    df_out = df_merged.copy()
+
+    # 🔥 Date 컬럼을 index에서 직접 생성 (pandas index 메타데이터 의존 제거)
+    df_out["Date"] = df_out.index
+
+    # 컬럼 순서 보장: Date + 나머지 헤더
+    df_out = df_out[["Date"] + headers[1:]]
+
+    # Date 포맷 통일
     df_out["Date"] = pd.to_datetime(df_out["Date"], errors="coerce").dt.strftime("%Y-%m-%d")
+
+    # NaN → 빈 문자열
     df_out = df_out.fillna("")
 
+    # =========================
+    # (10) REWRITE SHEET
+    # =========================
     ws.clear()
     ws.update([headers] + df_out.values.tolist(), value_input_option="USER_ENTERED")
+
     print(f"✅ {TAB_NAME}: rewritten rows={len(df_out)} cols={len(headers)}")
 
 

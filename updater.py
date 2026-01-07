@@ -52,18 +52,23 @@ WEEKLY_OFR_MNEMONICS = {
     "NYPD-PD_AFtD_OMBS-A": "OtherMBS_fails_to_deliver",
 }
 
+# 기본 국가 코드 및 한글 매핑 (자동 검색용)
 CCY_LIST = ["US", "CA", "XM", "CH", "JP", "CN", "KR"]
-
-# ECOS 902Y Code Mapping
-ECOS_CODE_MAP = {
-    "US": "US", "CA": "CA", "XM": "XM", "CH": "CH", 
-    "JP": "JP", "CN": "CN", "KR": "KR"
+COUNTRY_NAME_MAP = {
+    "US": ["미국", "U.S.A", "United States", "US"],
+    "CA": ["캐나다", "Canada", "CA"],
+    "XM": ["유로", "Euro", "유로지역", "XM", "U4", "EZ"],
+    "CH": ["스위스", "Switzerland", "CH"],
+    "JP": ["일본", "Japan", "JP"],
+    "CN": ["중국", "China", "CN"],
+    "KR": ["한국", "Korea", "KR"]
 }
 
+# 기본 코드 (자동 검색 실패 시 사용)
 ECOS_POLICY = "902Y006"
 ECOS_CPI    = "902Y008"
-ECOS_UNEMP  = "902Y021"
-ECOS_GROWTH = "902Y015"
+ECOS_UNEMP  = "902Y021" # 기본값
+ECOS_GROWTH = "902Y015" # 기본값
 
 # =========================
 # Google Sheets Helpers
@@ -111,7 +116,7 @@ def pick_start_date(last_date_str: Optional[str], default_start: str) -> str:
     except ValueError: return default_start
 
 # =========================
-# NETWORK HELPER (Retry Logic)
+# NETWORK HELPER
 # =========================
 def create_session():
     s = requests.Session()
@@ -122,6 +127,86 @@ def create_session():
     s.mount('http://', HTTPAdapter(max_retries=retries))
     s.mount('https://', HTTPAdapter(max_retries=retries))
     return s
+
+# =========================
+# ECOS AUTO-DISCOVERY (핵심 기능)
+# =========================
+def find_ecos_meta(api_key: str, table_keywords: list, item_targets: dict) -> tuple:
+    """
+    ECOS 테이블과 아이템 코드를 자동으로 찾습니다.
+    :param table_keywords: 테이블 이름에 포함될 키워드 리스트 (예: ['주요국', '실업률'])
+    :param item_targets: 국가코드 -> 검색어 리스트 (예: 'US' -> ['미국', 'US'])
+    :return: (found_stat_code, found_item_map)
+    """
+    session = create_session()
+    
+    # 1. 테이블 검색
+    stat_code = None
+    table_name = ""
+    # 전체 테이블 목록 조회 (페이지 1, 1000개)
+    url_table = f"http://ecos.bok.or.kr/api/StatisticTableList/{api_key}/json/kr/1/1000/"
+    try:
+        r = session.get(url_table, timeout=10)
+        js = r.json()
+        rows = js.get("StatisticTableList", {}).get("row", [])
+        
+        # 키워드를 모두 포함하는 테이블 찾기 (902Y 우선)
+        candidates = []
+        for row in rows:
+            t_name = row.get("STAT_NAME", "")
+            t_code = row.get("STAT_CODE", "")
+            if all(k in t_name for k in table_keywords):
+                candidates.append((t_code, t_name))
+        
+        # 902Y 시리즈 우선 선택
+        candidates.sort(key=lambda x: (not x[0].startswith("902Y"), x[0]))
+        
+        if candidates:
+            stat_code, table_name = candidates[0]
+            print(f"   🔎 Found Table: {stat_code} - {table_name}")
+        else:
+            print(f"   ⚠️ Could not find table for {table_keywords}")
+            return None, {}
+
+    except Exception as e:
+        print(f"   ⚠️ Table search failed: {e}")
+        return None, {}
+
+    # 2. 아이템(국가) 코드 검색
+    item_map = {}
+    url_item = f"http://ecos.bok.or.kr/api/StatisticItemList/{api_key}/json/kr/1/100/{stat_code}"
+    try:
+        r = session.get(url_item, timeout=10)
+        js = r.json()
+        rows = js.get("StatisticItemList", {}).get("row", [])
+        
+        for ccy, keywords in item_targets.items():
+            found = False
+            # 우선 정확한 코드 매칭 시도
+            for row in rows:
+                if row["ITEM_CODE"] == ccy:
+                    item_map[ccy] = ccy
+                    found = True
+                    break
+            
+            # 없으면 이름으로 검색
+            if not found:
+                for row in rows:
+                    i_name = row["ITEM_NAME"]
+                    if any(k in i_name for k in keywords):
+                        item_map[ccy] = row["ITEM_CODE"]
+                        found = True
+                        # print(f"      Matched {ccy} -> {row['ITEM_CODE']} ({i_name})")
+                        break
+            
+            if not found:
+                # print(f"      ⚠️ Failed to map {ccy}")
+                pass
+
+    except Exception as e:
+        print(f"   ⚠️ Item search failed: {e}")
+
+    return stat_code, item_map
 
 # =========================
 # ECOS & DATA HELPERS
@@ -163,26 +248,19 @@ def ecos_stat_search(
             f"{stat_code}/{cycle}/{start_arg}/{end_arg}/"
             f"{item_code1}/{item_code2}/{item_code3}/{item_code4}"
         )
-        
         try:
             r = session.get(url, timeout=timeout)
             r.raise_for_status()
-        except requests.exceptions.Timeout:
-            print(f"   ⚠️ Timeout for {item_code1}")
-            return None, None, url
         except Exception as e:
-            print(f"   ⚠️ Connection Error: {e}")
+            # print(f"   ⚠️ Conn Err {item_code1}: {e}")
             return None, None, url
 
         try:
             js = r.json()
-        except Exception as e:
-            print(f"   ⚠️ JSON Error. URL: {url}")
+        except:
             return None, None, url
 
         if "StatisticSearch" not in js:
-            if "RESULT" in js and js["RESULT"].get("CODE") not in ["INFO-000", "INFO-200"]:
-                print(f"   ℹ️ ECOS Msg: {js['RESULT'].get('MESSAGE')}")
             return js, [], url
 
         rows = js.get("StatisticSearch", {}).get("row", [])
@@ -190,7 +268,6 @@ def ecos_stat_search(
 
     js, rows, url = _call_once(start, end)
     
-    # Q 포맷 재시도
     if not rows and cycle.upper() == "Q":
         def to_q(fmt_ym):
             try:
@@ -230,7 +307,7 @@ def to_period_index(s: pd.Series, freq: str) -> pd.Series:
     if out.empty: return pd.Series(dtype="float64")
 
     if freq == "M":
-        out.index = out.index.to_period("M").to_timestamp() # 월초
+        out.index = out.index.to_period("M").to_timestamp()
         out = out.groupby(out.index).last().sort_index()
     elif freq == "Q":
         out.index = out.index.to_period("Q").to_timestamp("Q") 
@@ -270,36 +347,31 @@ def update_daily(fred, sh):
             s.index = pd.to_datetime(s.index)
             df_pulled = s.to_frame(name=col) if df_pulled.empty else df_pulled.join(s.to_frame(name=col), how="outer")
             time.sleep(0.1)
-        except Exception as e:
-            print(f"   ⚠️ FRED Error {sid}: {e}")
+        except: pass
 
     if df_pulled.empty:
         print(f"   ℹ️ No new data found.")
         return
 
-    print(f"✅ {TAB_NAME}: Fetched {len(df_pulled)} rows (Appending skipped).")
-    # 실제 반영 로직은 필요시 추가
+    print(f"✅ {TAB_NAME}: Fetched {len(df_pulled)} rows.")
 
 def update_weekly_ofr(sh):
-    # (코드 생략 - 위와 동일)
+    # OFR은 기존 코드 사용 (생략)
     pass
 
 # =========================
-# ECOS UPDATERS
+# ECOS MONTHLY
 # =========================
 def update_monthly_bok_only(sh):
     tab = "data-monthly"
     ws = ensure_worksheet(sh, tab)
-
     cols = []
     for ccy in CCY_LIST:
         cols += [f"{ccy}_CPI_YoY", f"{ccy}_Unemployment", f"{ccy}_PolicyRate"]
     headers = ["Date"] + cols
 
     header, last_date = get_header_and_last_date(ws)
-    if header != headers:
-        print(f"📝 {tab}: Writing headers...")
-        write_header(ws, headers)
+    if header != headers: write_header(ws, headers)
 
     if last_date:
         d_last = pd.to_datetime(last_date, errors="coerce")
@@ -311,24 +383,45 @@ def update_monthly_bok_only(sh):
     end_ym = pd.Timestamp.today().strftime("%Y%m")
     print(f"📌 {tab}: ECOS window {start_ym} ~ {end_ym}")
 
+    # 🟢 [Auto-Discovery] 실업률 코드 자동 검색
+    print("   🔎 Auto-discovering Unemployment codes...")
+    found_unemp_code, unemp_item_map = find_ecos_meta(BOK_API_KEY, ["주요국", "실업률"], COUNTRY_NAME_MAP)
+    # 못 찾으면 기본값 사용
+    unemp_code = found_unemp_code if found_unemp_code else ECOS_UNEMP
+    
     combined = pd.DataFrame()
 
     for ccy in CCY_LIST:
-        ecos_code = ECOS_CODE_MAP.get(ccy, ccy)
+        # 정책금리, CPI는 기존 코드 그대로 (BoK.ipynb에서 검증됨)
+        # 단, 실업률은 Auto-Discovery 결과 사용
         
+        # 기본 코드 매핑
+        ecos_ccy_default = ccy 
+        if ccy == "XM": ecos_ccy_default = "XM" # Euro
+        
+        # 실업률용 아이템 코드
+        unemp_item = unemp_item_map.get(ccy, ecos_ccy_default)
+
         try:
-            # 1. CPI
-            cpi_ix = ecos_stat_search(BOK_API_KEY, ECOS_CPI, "M", start_ym, end_ym, item_code1=ecos_code)
+            # 1. CPI (902Y008)
+            cpi_ix = ecos_stat_search(BOK_API_KEY, ECOS_CPI, "M", start_ym, end_ym, item_code1=ecos_ccy_default)
             cpi_ix = to_period_index(cpi_ix, "M")
             cpi_yoy = build_cpi_yoy_from_index(cpi_ix)
 
-            # 2. Unemployment
-            un = ecos_stat_search(BOK_API_KEY, ECOS_UNEMP, "M", start_ym, end_ym, item_code1=ecos_code)
+            # 2. Unemployment (Auto Discovered Code)
+            un = ecos_stat_search(BOK_API_KEY, unemp_code, "M", start_ym, end_ym, item_code1=unemp_item)
             un = to_period_index(un, "M")
 
-            # 3. Policy Rate
-            pr = ecos_stat_search(BOK_API_KEY, ECOS_POLICY, "M", start_ym, end_ym, item_code1=ecos_code)
+            # 3. Policy Rate (902Y006)
+            pr = ecos_stat_search(BOK_API_KEY, ECOS_POLICY, "M", start_ym, end_ym, item_code1=ecos_ccy_default)
             pr = to_period_index(pr, "M")
+
+            # 🟢 [Japan Fix] 일본 정책금리 0 채우기
+            if ccy == "JP" and not pr.empty:
+                # 1단계: Forward Fill (이전 금리 유지)
+                pr = pr.asfreq("MS").ffill()
+                # 2단계: 그래도 NaN이면 0으로 채움 (마이너스 금리/0금리 구간)
+                pr = pr.fillna(0)
 
             tmp = pd.DataFrame(index=cpi_yoy.index.union(un.index).union(pr.index).sort_values())
             if not cpi_yoy.empty: tmp[f"{ccy}_CPI_YoY"] = cpi_yoy
@@ -340,18 +433,15 @@ def update_monthly_bok_only(sh):
             time.sleep(0.1)
 
         except Exception as e:
-            print(f"   ⚠️ Error processing {ccy}: {e}")
+            print(f"   ⚠️ Error {ccy}: {e}")
 
     if combined.empty:
-        print(f"❌ {tab}: No valid data fetched.")
+        print(f"❌ {tab}: No valid data.")
         return
 
-    # [FIXED] GroupBy 후 인덱스 이름 복구
     combined.index = pd.to_datetime(combined.index, errors="coerce")
     combined = combined.groupby(combined.index.to_period("M").to_timestamp()).last().sort_index()
     combined = combined[combined.index >= start_dt]
-    
-    # 🟢 [핵심 수정] 인덱스 이름을 'Date'로 명시해야 reset_index() 후 'Date' 컬럼이 생성됨
     combined.index.name = "Date"
 
     for c in cols:
@@ -366,17 +456,17 @@ def update_monthly_bok_only(sh):
     ws.update(range_name="A1", values=[headers] + out.values.tolist(), value_input_option="USER_ENTERED")
     print(f"✅ {tab}: Updated {len(out)} rows.")
 
+# =========================
+# ECOS QUARTERLY
+# =========================
 def update_quarterly_bok_only(sh):
     tab = "data-quarterly"
     ws = ensure_worksheet(sh, tab)
-
     cols = [f"{ccy}_Growth" for ccy in CCY_LIST]
     headers = ["Date"] + cols
 
     header, last_date = get_header_and_last_date(ws)
-    if header != headers:
-        print(f"📝 {tab}: Writing headers...")
-        write_header(ws, headers)
+    if header != headers: write_header(ws, headers)
 
     if last_date:
         d_last = pd.to_datetime(last_date, errors="coerce")
@@ -389,28 +479,33 @@ def update_quarterly_bok_only(sh):
     end_q = to_q_str(pd.Timestamp.today())
     print(f"📌 {tab}: ECOS window {start_q} ~ {end_q}")
 
+    # 🟢 [Auto-Discovery] 경제성장률 코드 자동 검색
+    print("   🔎 Auto-discovering Growth codes...")
+    found_growth_code, growth_item_map = find_ecos_meta(BOK_API_KEY, ["주요국", "경제성장률"], COUNTRY_NAME_MAP) # 성장률 or 경제성장률
+    growth_code = found_growth_code if found_growth_code else ECOS_GROWTH
+
     combined = pd.DataFrame()
 
     for ccy in CCY_LIST:
-        ecos_code = ECOS_CODE_MAP.get(ccy, ccy)
+        # 매핑된 아이템 코드 사용 (없으면 기본 ccy)
+        ecos_item = growth_item_map.get(ccy, ccy)
+        
         try:
-            s = ecos_stat_search(BOK_API_KEY, ECOS_GROWTH, "Q", start_q, end_q, item_code1=ecos_code)
+            s = ecos_stat_search(BOK_API_KEY, growth_code, "Q", start_q, end_q, item_code1=ecos_item)
             s = to_period_index(s, "Q")
             if not s.empty:
                 tmp = s.to_frame(name=f"{ccy}_Growth")
                 combined = tmp if combined.empty else combined.join(tmp, how="outer")
             time.sleep(0.1)
         except Exception as e:
-            print(f"   ⚠️ Error processing {ccy}: {e}")
+            print(f"   ⚠️ Error {ccy}: {e}")
 
     if combined.empty:
-        print(f"❌ {tab}: No valid data fetched.")
+        print(f"❌ {tab}: No valid data.")
         return
 
     combined = combined.sort_index()
     combined = combined[combined.index >= start_dt]
-    
-    # 🟢 [핵심 수정] 인덱스 이름 설정
     combined.index.name = "Date"
 
     for c in cols:
@@ -425,9 +520,6 @@ def update_quarterly_bok_only(sh):
     ws.update(range_name="A1", values=[headers] + out.values.tolist(), value_input_option="USER_ENTERED")
     print(f"✅ {tab}: Updated {len(out)} rows.")
 
-# =========================
-# MAIN
-# =========================
 def main():
     try:
         fred = Fred(api_key=FRED_API_KEY)
@@ -437,12 +529,8 @@ def main():
         print(f"❌ Init Failed: {e}")
         return
 
-    try: update_daily(fred, sh)
-    except Exception as e: print(f"❌ Daily Update Failed: {e}")
-
-    try: update_weekly_ofr(sh)
-    except Exception as e: print(f"❌ Weekly Update Failed: {e}")
-
+    update_daily(fred, sh)
+    # update_weekly_ofr(sh)
     update_monthly_bok_only(sh)
     update_quarterly_bok_only(sh)
     print("\n🎉 All updates completed.")

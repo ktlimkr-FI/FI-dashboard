@@ -52,15 +52,13 @@ WEEKLY_OFR_MNEMONICS = {
     "NYPD-PD_AFtD_OMBS-A": "OtherMBS_fails_to_deliver",
 }
 
-# 🟢 [수정] 국가 목록 원상 복구
 CCY_LIST = ["US", "CA", "XM", "CH", "JP", "CN", "KR"]
 
-# 자동 검색용 키워드 (독일 포함)
 COUNTRY_NAME_MAP = {
     "US": ["미국", "U.S.A", "United States", "US"],
     "CA": ["캐나다", "Canada", "CA"],
     "XM": ["유로", "Euro", "유로지역", "XM", "U4", "EZ"], 
-    "DE": ["독일", "Germany", "DE"],  # 독일 데이터 검색용
+    "DE": ["독일", "Germany", "DE"], 
     "CH": ["스위스", "Switzerland", "CH"],
     "JP": ["일본", "Japan", "JP"],
     "CN": ["중국", "China", "CN"],
@@ -128,6 +126,40 @@ def create_session():
     return s
 
 # =========================
+# OFR LOADER (Weekly) - 🟢 [복구됨]
+# =========================
+def load_ofr_multifull(mnemonics: list[str], start_date: str) -> pd.DataFrame:
+    session = create_session()
+    url = "https://data.financialresearch.gov/v1/series/multifull"
+    params = {"mnemonics": ",".join(mnemonics)}
+    
+    try:
+        resp = session.get(url, params=params, timeout=30)
+        resp.raise_for_status()
+        raw = resp.json()
+    except Exception as e:
+        print(f"⚠️ OFR Request Failed: {e}")
+        return pd.DataFrame()
+
+    frames = []
+    for mnem, entry in raw.items():
+        ts = entry.get("timeseries", {})
+        agg = ts.get("aggregation")
+        if not agg: continue
+        
+        tmp = pd.DataFrame(agg, columns=["Date", mnem])
+        tmp["Date"] = pd.to_datetime(tmp["Date"])
+        tmp = tmp.set_index("Date").sort_index()
+        frames.append(tmp)
+
+    if not frames:
+        return pd.DataFrame()
+
+    out = pd.concat(frames, axis=1).sort_index()
+    out = out[out.index >= pd.to_datetime(start_date)]
+    return out
+
+# =========================
 # ECOS AUTO-DISCOVERY
 # =========================
 def find_ecos_meta(api_key: str, table_keywords: list, item_targets: dict) -> tuple:
@@ -177,17 +209,14 @@ def find_ecos_meta(api_key: str, table_keywords: list, item_targets: dict) -> tu
                     item_map[ccy] = ccy
                     found = True
                     break
-            
             if not found:
                 for row in rows:
-                    i_name = row["ITEM_NAME"]
-                    if any(k in i_name for k in keywords):
+                    if any(k in row["ITEM_NAME"] for k in keywords):
                         item_map[ccy] = row["ITEM_CODE"]
                         found = True
                         break
-            
             if not found:
-                item_map[ccy] = ccy # Fallback
+                item_map[ccy] = ccy
 
     except Exception as e:
         print(f"   ⚠️ Item search failed: {e}")
@@ -333,11 +362,33 @@ def update_daily(fred, sh):
         return
     print(f"✅ {TAB_NAME}: Fetched {len(df_pulled)} rows.")
 
+# 🟢 [복구됨] Weekly OFR Update
 def update_weekly_ofr(sh):
-    pass
+    tab = "data-weekly"
+    ws = ensure_worksheet(sh, tab)
+    headers = ["Date"] + list(WEEKLY_OFR_MNEMONICS.values())
+    
+    header, last_date = get_header_and_last_date(ws)
+    if header != headers: write_header(ws, headers)
+    
+    start_date = pick_start_date(last_date, "2012-01-01")
+    print(f"📌 {tab}: Pulling OFR from {start_date}...")
+
+    df = load_ofr_multifull(list(WEEKLY_OFR_MNEMONICS.keys()), start_date)
+    if df.empty:
+        print(f"   ℹ️ No new data.")
+        return
+        
+    df = df.rename(columns=WEEKLY_OFR_MNEMONICS)
+    df = df.reset_index()
+    df["Date"] = pd.to_datetime(df["Date"]).dt.strftime("%Y-%m-%d")
+    df = df[["Date"] + list(WEEKLY_OFR_MNEMONICS.values())].fillna("")
+    
+    n = append_rows(ws, df.values.tolist())
+    print(f"✅ {tab}: Appended {n} rows.")
 
 # =========================
-# ECOS MONTHLY
+# ECOS MONTHLY (Full Reload)
 # =========================
 def update_monthly_bok_only(sh):
     tab = "data-monthly"
@@ -347,20 +398,13 @@ def update_monthly_bok_only(sh):
         cols += [f"{ccy}_CPI_YoY", f"{ccy}_Unemployment", f"{ccy}_PolicyRate"]
     headers = ["Date"] + cols
 
-    header, last_date = get_header_and_last_date(ws)
-    if header != headers: write_header(ws, headers)
-
-    if last_date:
-        d_last = pd.to_datetime(last_date, errors="coerce")
-        start_dt = (d_last - pd.DateOffset(months=15)) if pd.notna(d_last) else pd.Timestamp("2000-01-01")
-    else:
-        start_dt = pd.Timestamp("2000-01-01")
-    
+    # Full Reload: 2000년 부터
+    start_dt = pd.Timestamp("2000-01-01")
     start_ym = start_dt.strftime("%Y%m")
     end_ym = pd.Timestamp.today().strftime("%Y%m")
-    print(f"📌 {tab}: ECOS window {start_ym} ~ {end_ym}")
+    
+    print(f"📌 {tab}: FULL RELOAD window {start_ym} ~ {end_ym}")
 
-    # 1. 자동 검색: 실업률 코드, 정책금리/CPI 아이템 매핑
     print("   🔎 Auto-discovering codes...")
     found_unemp_code, unemp_item_map = find_ecos_meta(BOK_API_KEY, ["주요국", "실업률"], COUNTRY_NAME_MAP)
     unemp_code = found_unemp_code if found_unemp_code else ECOS_UNEMP
@@ -371,17 +415,10 @@ def update_monthly_bok_only(sh):
     combined = pd.DataFrame()
 
     for ccy in CCY_LIST:
-        # 기본 매핑 로직 (XM -> DE 대체 등)
-        target_ccy_cpi = ccy
-        target_ccy_unemp = ccy
-        target_ccy_policy = ccy # 금리는 대체 안 함 (XM 유지)
-
-        if ccy == "XM":
-            # 🟢 [대체] 유로존 CPI/실업률 -> 독일(DE) 데이터 사용
-            target_ccy_cpi = "DE"
-            target_ccy_unemp = "DE"
+        target_ccy_cpi = "DE" if ccy == "XM" else ccy
+        target_ccy_unemp = "DE" if ccy == "XM" else ccy
+        target_ccy_policy = ccy # 금리는 유지
         
-        # 아이템 코드 가져오기 (매핑된 ccy 기준)
         cpi_item = cpi_item_map.get(target_ccy_cpi, target_ccy_cpi)
         unemp_item = unemp_item_map.get(target_ccy_unemp, target_ccy_unemp)
         policy_item = policy_item_map.get(target_ccy_policy, target_ccy_policy)
@@ -392,8 +429,7 @@ def update_monthly_bok_only(sh):
             cpi_ix = to_period_index(cpi_ix, "M")
             cpi_yoy = build_cpi_yoy_from_index(cpi_ix)
 
-            # 2. Unemployment
-            # 🟢 [제거] 스위스(CH) 실업률은 수집 스킵
+            # 2. Unemployment (CH 제외)
             if ccy == "CH":
                 un = pd.Series(dtype="float64")
             else:
@@ -404,7 +440,7 @@ def update_monthly_bok_only(sh):
             pr = ecos_stat_search(BOK_API_KEY, ECOS_POLICY, "M", start_ym, end_ym, item_code1=policy_item)
             pr = to_period_index(pr, "M")
 
-            # 🟢 [Japan Fix]
+            # JP 금리 보정
             if ccy == "JP" and not pr.empty:
                 pr = pr.asfreq("MS").ffill().fillna(0)
 
@@ -439,10 +475,10 @@ def update_monthly_bok_only(sh):
 
     ws.clear()
     ws.update(range_name="A1", values=[headers] + out.values.tolist(), value_input_option="USER_ENTERED")
-    print(f"✅ {tab}: Updated {len(out)} rows.")
+    print(f"✅ {tab}: Full Reloaded {len(out)} rows.")
 
 # =========================
-# ECOS QUARTERLY
+# ECOS QUARTERLY (Full Reload)
 # =========================
 def update_quarterly_bok_only(sh):
     tab = "data-quarterly"
@@ -450,19 +486,13 @@ def update_quarterly_bok_only(sh):
     cols = [f"{ccy}_Growth" for ccy in CCY_LIST]
     headers = ["Date"] + cols
 
-    header, last_date = get_header_and_last_date(ws)
-    if header != headers: write_header(ws, headers)
-
-    if last_date:
-        d_last = pd.to_datetime(last_date, errors="coerce")
-        start_dt = (d_last - pd.DateOffset(months=9)) if pd.notna(d_last) else pd.Timestamp("1990-01-01")
-    else:
-        start_dt = pd.Timestamp("1990-01-01")
+    # Full Reload: 1990년 부터
+    start_dt = pd.Timestamp("1990-01-01")
     
     def to_q_str(dt): return f"{dt.year}Q{((dt.month-1)//3)+1}"
     start_q = to_q_str(start_dt)
     end_q = to_q_str(pd.Timestamp.today())
-    print(f"📌 {tab}: ECOS window {start_q} ~ {end_q}")
+    print(f"📌 {tab}: FULL RELOAD window {start_q} ~ {end_q}")
 
     print("   🔎 Auto-discovering Growth codes...")
     found_growth_code, growth_item_map = find_ecos_meta(BOK_API_KEY, ["주요국", "경제성장률"], COUNTRY_NAME_MAP)
@@ -471,11 +501,7 @@ def update_quarterly_bok_only(sh):
     combined = pd.DataFrame()
 
     for ccy in CCY_LIST:
-        target_ccy = ccy
-        # 🟢 [대체] 유로존 성장률 -> 독일(DE) 데이터 사용
-        if ccy == "XM":
-            target_ccy = "DE"
-            
+        target_ccy = "DE" if ccy == "XM" else ccy
         ecos_item = growth_item_map.get(target_ccy, target_ccy)
         
         try:
@@ -506,7 +532,7 @@ def update_quarterly_bok_only(sh):
 
     ws.clear()
     ws.update(range_name="A1", values=[headers] + out.values.tolist(), value_input_option="USER_ENTERED")
-    print(f"✅ {tab}: Updated {len(out)} rows.")
+    print(f"✅ {tab}: Full Reloaded {len(out)} rows.")
 
 def main():
     try:
@@ -517,10 +543,24 @@ def main():
         print(f"❌ Init Failed: {e}")
         return
 
-    update_daily(fred, sh)
-    # update_weekly_ofr(sh)
+    # 1. Daily
+    try:
+        update_daily(fred, sh)
+    except Exception as e:
+        print(f"❌ Daily Update Failed: {e}")
+
+    # 2. Weekly (복구됨)
+    try:
+        update_weekly_ofr(sh)
+    except Exception as e:
+        print(f"❌ Weekly Update Failed: {e}")
+
+    # 3. Monthly (Full Reload)
     update_monthly_bok_only(sh)
+    
+    # 4. Quarterly (Full Reload)
     update_quarterly_bok_only(sh)
+    
     print("\n🎉 All updates completed.")
 
 if __name__ == "__main__":

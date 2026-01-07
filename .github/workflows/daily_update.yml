@@ -26,4 +26,6 @@ jobs:
           FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
           GSHEET_ID: ${{ secrets.GSHEET_ID }}
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          BOK_API_KEY: ${{ secrets.BOK_API_KEY }}
+
         run: python updater.py

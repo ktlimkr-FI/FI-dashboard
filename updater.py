@@ -269,6 +269,15 @@ def update_daily(fred, sh):
     TAB_NAME = "data-daily"
     LOOKBACK_DAYS = 30
 
+    print("DEBUG sheet title:", sh.title)
+    print("DEBUG worksheets:", [w.title for w in sh.worksheets()][:50])
+
+    ws = ensure_worksheet(sh, "data-daily")
+    values = ws.get_all_values()
+    print("DEBUG first row:", values[0] if values else None)
+    print("DEBUG last row:", values[-1] if values else None)
+
+
     ws = ensure_worksheet(sh, TAB_NAME)
 
     headers = ["Date"] + list(DAILY_FRED_SERIES.values())

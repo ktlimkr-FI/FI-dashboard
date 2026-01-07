@@ -152,8 +152,8 @@ def load_ofr_multifull(mnemonics: list[str], start_date: str) -> pd.DataFrame:
 def ecos_stat_search(
     api_key: str,
     stat_code: str,
-    cycle: str,
-    start: str,
+    cycle: str,        # "M" or "Q"
+    start: str,        # "YYYYMM" or "YYYYQn"
     end: str,
     item_code1: str = "?",
     item_code2: str = "?",
@@ -164,10 +164,11 @@ def ecos_stat_search(
 ) -> pd.Series:
     """
     [FIXED] URL Structure:
-    /api/StatisticSearch/{KEY}/{TYPE}/{LANG}/{START}/{END}/{STAT_CODE}/{CYCLE}/{START_DATE}/{END_DATE}/{ITEM1}...
+    Correct: /api/StatisticSearch/{KEY}/{TYPE}/{LANG}/{START}/{END}/{STAT_CODE}/...
+    Was:     /api/{KEY}/.../StatisticSearch/... (Wrong)
     """
     def _call_once(start_arg, end_arg):
-        # CORRECTED URL ORDER
+        # 🟢 [수정됨] StatisticSearch 위치 변경 (API_KEY 앞)
         url = (
             f"https://ecos.bok.or.kr/api/StatisticSearch/{api_key}/json/{lang}/1/100000/"
             f"{stat_code}/{cycle}/{start_arg}/{end_arg}/"
@@ -177,37 +178,45 @@ def ecos_stat_search(
             r = requests.get(url, timeout=timeout)
             r.raise_for_status()
         except Exception as e:
-            print(f"⚠️ ECOS request failed for {stat_code}: {e}")
+            print(f"⚠️ ECOS request failed for {stat_code} ({item_code1}): {e}")
             return None, None, url
-        
+
         try:
             js = r.json()
         except Exception as e:
-            # HTML error pages often cause JSON decode errors
-            print(f"⚠️ ECOS JSON decode failed. URL might be wrong or Key expired. URL: {url}")
+            print(f"⚠️ ECOS JSON decode failed. URL: {url} Error: {e}")
             return None, None, url
-
-        # Check for API level errors (e.g., INFO-200 No Data)
+        
+        # ECOS API 에러 코드 확인 (데이터 없음 등)
         if "RESULT" in js:
-             err_code = js["RESULT"].get("CODE")
-             if err_code != "INFO-000":
-                 # INFO-200 is "No Data", which is common for invalid codes
-                 return js, [], url
+            code = js["RESULT"].get("CODE")
+            msg = js["RESULT"].get("MESSAGE")
+            if code != "INFO-000":
+                # 데이터가 없는 경우(INFO-200)는 에러가 아니므로 조용히 처리
+                if code != "INFO-200":
+                    print(f"ℹ️ ECOS API Message: {code} - {msg} | URL: {url}")
+                return js, [], url
 
         rows = js.get("StatisticSearch", {}).get("row", [])
         return js, rows, url
 
     js, rows, url = _call_once(start, end)
-    
-    # ... (rest of the logic handles retries for Q format, unchanged) ...
-    # [Q-format logic omitted for brevity, keep your original Q retry logic here]
-    # For simplicity in this snippet, assuming the original retry logic is preserved inside the user's code logic.
-    
-    # Re-inserting the Q retry logic for completeness if you copy-paste this block:
+
+    # ... (Q 포맷 재시도 로직은 기존 코드 유지) ...
     if not rows and cycle.upper() == "Q":
-        # ... (Same Q retry logic as your original code) ...
-        # If needed, I can provide the full block.
-        pass 
+        # 쿼터 포맷 변환 로직 (기존 코드 활용)
+        def to_q(fmt_ym):
+            try:
+                dt = pd.to_datetime(fmt_ym, format="%Y%m")
+                q = ((dt.month - 1) // 3) + 1
+                return f"{dt.year}Q{q}"
+            except: return None
+        
+        sq, eq = to_q(start), to_q(end)
+        if sq and eq:
+            js2, rows2, url2 = _call_once(sq, eq)
+            if rows2:
+                rows = rows2
 
     if not rows:
         return pd.Series(dtype="float64")
@@ -216,16 +225,14 @@ def ecos_stat_search(
     for row in rows:
         t = row.get("TIME")
         v = row.get("DATA_VALUE")
-        if not t or v is None:
-            continue
+        if not t or v is None: continue
+        
         dt = _tp_to_timestamp(t)
-        if pd.isna(dt):
-            continue
+        if pd.isna(dt): continue
         try:
             fv = float(v)
             out.append((dt, fv))
-        except:
-            continue
+        except: continue
 
     if not out:
         return pd.Series(dtype="float64")
@@ -370,156 +377,134 @@ def update_monthly_bok_only(sh):
     tab = "data-monthly"
     ws = ensure_worksheet(sh, tab)
 
-    # 1. Prepare Columns & Headers
-    # Map friendly names to ECOS codes if necessary. 
-    # NOTE: You must check if 'XM', 'US' work. 
-    # For Euro Area, ECOS usually uses 'EZ'.
+    # 헤더 정의
     cols = []
     for ccy in CCY_LIST:
         cols += [f"{ccy}_CPI_YoY", f"{ccy}_Unemployment", f"{ccy}_PolicyRate"]
     headers = ["Date"] + cols
 
-    # 2. Determine Start Date
+    # 날짜 계산
     header, last_date = get_header_and_last_date(ws)
     if last_date:
         d_last = pd.to_datetime(last_date, errors="coerce")
-        if pd.isna(d_last):
-            start_dt = pd.Timestamp("2000-01-01")
-        else:
-            # Look back 15 months to be safe with revisions/YoY calc
-            start_dt = (d_last - pd.DateOffset(months=15)).to_period("M").to_timestamp("MS")
+        start_dt = (d_last - pd.DateOffset(months=15)) if pd.notna(d_last) else pd.Timestamp("2000-01-01")
     else:
         start_dt = pd.Timestamp("2000-01-01")
-
+    
+    start_dt = start_dt.to_period("M").to_timestamp("MS")
     start_ym = start_dt.strftime("%Y%m")
     end_ym = pd.Timestamp.today().strftime("%Y%m")
+    
     print(f"📌 {tab}: ECOS window {start_ym} ~ {end_ym}")
 
-    # 3. Fetch Data FIRST (Do not clear sheet yet)
     combined = pd.DataFrame()
-    
-    # ECOS Code Mapping (Suggestion)
-    # Check ECOS website for exact codes. This is a heuristic mapping.
-    ecos_code_map = {
-        "XM": "EZ", # Euro Area usually EZ in ECOS
-        "KR": "KR", # Check if KR exists in 902Y tables, if not, might need 100Y logic
-        # Others map to themselves by default
-    }
+
+    # 🚨 국가 코드 주의사항: 
+    # ECOS 902Y(주요국) 시리즈에서 'XM'(유로지역)은 보통 'EZ' 또는 'U4' 등을 사용합니다.
+    # 'KR'(한국)은 902Y에 없을 수 있으며 별도 테이블(물가: 021Y, 금리: 060Y)을 써야 할 수도 있습니다.
+    # 아래는 시도해볼 만한 매핑입니다. 데이터가 안 나오면 ECOS 웹사이트에서 코드를 확인해야 합니다.
+    country_map = {"XM": "EZ", "KR": "KR"} 
 
     for ccy in CCY_LIST:
-        target_code = ecos_code_map.get(ccy, ccy)
-        print(f"🔍 Fetching {ccy} (mapped to {target_code})...")
-
+        ecos_ccy = country_map.get(ccy, ccy) # 매핑 없으면 그대로 사용
+        
         try:
-            # CPI
-            cpi_ix = ecos_stat_search(BOK_API_KEY, ECOS_CPI, "M", start_ym, end_ym, item_code1=target_code)
+            # 1. CPI (902Y008) -> YoY 계산
+            cpi_ix = ecos_stat_search(BOK_API_KEY, ECOS_CPI, "M", start_ym, end_ym, item_code1=ecos_ccy)
             cpi_ix = to_period_index(cpi_ix, "M")
             cpi_yoy = build_cpi_yoy_from_index(cpi_ix)
 
-            # Unemployment
-            un = ecos_stat_search(BOK_API_KEY, ECOS_UNEMP, "M", start_ym, end_ym, item_code1=target_code)
+            # 2. 실업률 (902Y021)
+            un = ecos_stat_search(BOK_API_KEY, ECOS_UNEMP, "M", start_ym, end_ym, item_code1=ecos_ccy)
             un = to_period_index(un, "M")
 
-            # Policy Rate
-            pr = ecos_stat_search(BOK_API_KEY, ECOS_POLICY, "M", start_ym, end_ym, item_code1=target_code)
+            # 3. 정책금리 (902Y006)
+            pr = ecos_stat_search(BOK_API_KEY, ECOS_POLICY, "M", start_ym, end_ym, item_code1=ecos_ccy)
             pr = to_period_index(pr, "M")
 
+            # 병합
             tmp = pd.DataFrame(index=cpi_yoy.index.union(un.index).union(pr.index).sort_values())
             if not cpi_yoy.empty: tmp[f"{ccy}_CPI_YoY"] = cpi_yoy
             if not un.empty: tmp[f"{ccy}_Unemployment"] = un
             if not pr.empty: tmp[f"{ccy}_PolicyRate"] = pr
 
             combined = tmp if combined.empty else combined.join(tmp, how="outer")
-            time.sleep(0.1) # Be gentle with API
+            time.sleep(0.1)
 
         except Exception as e:
-            print(f"⚠️ {tab}: ECOS failed for {ccy}: {e}")
+            print(f"⚠️ {tab}: Failed for {ccy}: {e}")
 
-    # 4. Check results
+    # 🛡️ 데이터가 비어있으면 시트를 건드리지 않고 종료
     if combined.empty:
-        print(f"❌ {tab}: No data fetched. Keeping old data (if any). Check API Key or Codes.")
+        print(f"❌ {tab}: No data fetched. Check API URL or Item Codes. Sheet NOT updated.")
         return
 
-    # 5. Process and Write
+    # 데이터 정리
     combined.index = pd.to_datetime(combined.index, errors="coerce")
     combined = combined.groupby(combined.index.to_period("M").to_timestamp("MS")).last().sort_index()
     combined = combined[combined.index >= start_dt]
     
-    # Ensure all columns exist
+    # 누락된 컬럼 채우기
     for c in cols:
-        if c not in combined.columns:
-            combined[c] = pd.NA
+        if c not in combined.columns: combined[c] = pd.NA
     combined = combined[cols]
 
-    # Convert to list for Sheets
+    # 최종 쓰기
     out = combined.reset_index()
     out["Date"] = pd.to_datetime(out["Date"], errors="coerce").dt.strftime("%Y-%m-%d")
     out = out.fillna("")
 
-    # 6. NOW Clear and Write
     ws.clear()
     ws.update([headers] + out.values.tolist(), value_input_option="USER_ENTERED")
-    print(f"✅ {tab}: rewritten rows={len(out)}")
+    print(f"✅ {tab}: updated {len(out)} rows.")
 
 def update_quarterly_bok_only(sh):
-    """
-    Quarterly ONLY headers:
-      - {CCY}_Growth
-    Source: BoK ECOS 902Y015[Q]
-    """
     tab = "data-quarterly"
     ws = ensure_worksheet(sh, tab)
 
     cols = [f"{ccy}_Growth" for ccy in CCY_LIST]
     headers = ["Date"] + cols
 
+    # 날짜 설정
     header, last_date = get_header_and_last_date(ws)
-    if header != headers:
-        ws.clear()
-        write_header(ws, headers)
-
-    # Pull window
     if last_date:
         d_last = pd.to_datetime(last_date, errors="coerce")
-        if pd.isna(d_last):
-            start_dt = pd.Timestamp("1990-01-01")
-        else:
-            start_dt = d_last - pd.DateOffset(months=9)  # 3 quarters lookback
+        start_dt = (d_last - pd.DateOffset(months=9)) if pd.notna(d_last) else pd.Timestamp("1990-01-01")
     else:
         start_dt = pd.Timestamp("1990-01-01")
 
-    # ECOS quarterly range: best-effort using YYYYQn-like numeric is inconsistent;
-    # We will still pass YYYYMM bounds but cycle=Q often works with TIME parsing returned as 2024Q3 etc.
-    start_q_hint = start_dt.strftime("%Y%m")
-    end_q_hint = pd.Timestamp.today().strftime("%Y%m")
-    print(f"📌 {tab}: ECOS window {start_q_hint} ~ {end_q_hint}")
+    # 분기 포맷 변환 (YYYYQn)
+    def to_q_str(dt): return f"{dt.year}Q{((dt.month - 1) // 3) + 1}"
+    
+    start_q = to_q_str(start_dt)
+    end_q = to_q_str(pd.Timestamp.today())
+    print(f"📌 {tab}: ECOS window {start_q} ~ {end_q}")
 
     combined = pd.DataFrame()
+    country_map = {"XM": "EZ", "KR": "KR"} # 국가 코드 매핑 확인 필요
 
     for ccy in CCY_LIST:
+        ecos_ccy = country_map.get(ccy, ccy)
         try:
-            s = ecos_stat_search(BOK_API_KEY, ECOS_GROWTH, "Q", start_q_hint, end_q_hint, item_code1=ccy)
+            s = ecos_stat_search(BOK_API_KEY, ECOS_GROWTH, "Q", start_q, end_q, item_code1=ecos_ccy)
             s = to_period_index(s, "Q")
-            if s.empty:
-                print(f"⚠️ {tab}: growth empty for {ccy}")
-                continue
-            tmp = s.to_frame(name=f"{ccy}_Growth")
-            combined = tmp if combined.empty else combined.join(tmp, how="outer")
-            time.sleep(0.08)
+            
+            if not s.empty:
+                tmp = s.to_frame(name=f"{ccy}_Growth")
+                combined = tmp if combined.empty else combined.join(tmp, how="outer")
+            time.sleep(0.1)
         except Exception as e:
-            print(f"⚠️ {tab}: ECOS quarterly failed for {ccy}: {e}")
+            print(f"⚠️ {tab}: Failed for {ccy}: {e}")
 
     if combined.empty:
-        print(f"❌ {tab}: combined empty.")
+        print(f"❌ {tab}: No data fetched. Sheet NOT updated.")
         return
 
     combined = combined.sort_index()
-    combined = combined[combined.index >= pd.to_datetime(start_dt)]
-    combined = combined.dropna(how="all")
-
+    combined = combined[combined.index >= start_dt]
+    
     for c in cols:
-        if c not in combined.columns:
-            combined[c] = pd.NA
+        if c not in combined.columns: combined[c] = pd.NA
     combined = combined[cols]
 
     out = combined.reset_index()
@@ -528,8 +513,7 @@ def update_quarterly_bok_only(sh):
 
     ws.clear()
     ws.update([headers] + out.values.tolist(), value_input_option="USER_ENTERED")
-    print(f"✅ {tab}: rewritten rows={len(out)} cols={len(headers)}")
-
+    print(f"✅ {tab}: updated {len(out)} rows.")
 
 # =========================
 # Main

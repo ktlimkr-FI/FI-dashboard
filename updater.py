@@ -155,7 +155,6 @@ def ecos_stat_search(
 ) -> pd.Series:
     
     session = create_session()
-    # 노트북과 동일하게 http 사용
     base_url = "http://ecos.bok.or.kr/api/StatisticSearch"
     
     def _call_once(start_arg, end_arg):
@@ -347,18 +346,19 @@ def update_monthly_bok_only(sh):
         print(f"❌ {tab}: No valid data fetched.")
         return
 
-    # [FIX] GroupBy 후 인덱스 이름 복구
+    # [FIXED] GroupBy 후 인덱스 이름 복구
     combined.index = pd.to_datetime(combined.index, errors="coerce")
     combined = combined.groupby(combined.index.to_period("M").to_timestamp()).last().sort_index()
     combined = combined[combined.index >= start_dt]
-    combined.index.name = "Date"  # 🟢 중요: KeyError 방지
+    
+    # 🟢 [핵심 수정] 인덱스 이름을 'Date'로 명시해야 reset_index() 후 'Date' 컬럼이 생성됨
+    combined.index.name = "Date"
 
     for c in cols:
         if c not in combined.columns: combined[c] = pd.NA
     combined = combined[cols]
 
     out = combined.reset_index()
-    # 이제 'Date' 컬럼이 존재하므로 에러 없음
     out["Date"] = pd.to_datetime(out["Date"], errors="coerce").dt.strftime("%Y-%m-%d")
     out = out.fillna("")
 
@@ -409,7 +409,9 @@ def update_quarterly_bok_only(sh):
 
     combined = combined.sort_index()
     combined = combined[combined.index >= start_dt]
-    combined.index.name = "Date"  # 🟢 중요: KeyError 방지
+    
+    # 🟢 [핵심 수정] 인덱스 이름 설정
+    combined.index.name = "Date"
 
     for c in cols:
         if c not in combined.columns: combined[c] = pd.NA

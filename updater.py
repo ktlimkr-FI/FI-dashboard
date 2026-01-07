@@ -52,8 +52,10 @@ WEEKLY_OFR_MNEMONICS = {
     "NYPD-PD_AFtD_OMBS-A": "OtherMBS_fails_to_deliver",
 }
 
+# 국가 목록
 CCY_LIST = ["US", "CA", "XM", "CH", "JP", "CN", "KR"]
 
+# 자동 검색용 키워드
 COUNTRY_NAME_MAP = {
     "US": ["미국", "U.S.A", "United States", "US"],
     "CA": ["캐나다", "Canada", "CA"],
@@ -126,7 +128,7 @@ def create_session():
     return s
 
 # =========================
-# OFR LOADER (Weekly) - 🟢 [복구됨]
+# OFR LOADER
 # =========================
 def load_ofr_multifull(mnemonics: list[str], start_date: str) -> pd.DataFrame:
     session = create_session()
@@ -146,15 +148,12 @@ def load_ofr_multifull(mnemonics: list[str], start_date: str) -> pd.DataFrame:
         ts = entry.get("timeseries", {})
         agg = ts.get("aggregation")
         if not agg: continue
-        
         tmp = pd.DataFrame(agg, columns=["Date", mnem])
         tmp["Date"] = pd.to_datetime(tmp["Date"])
         tmp = tmp.set_index("Date").sort_index()
         frames.append(tmp)
 
-    if not frames:
-        return pd.DataFrame()
-
+    if not frames: return pd.DataFrame()
     out = pd.concat(frames, axis=1).sort_index()
     out = out[out.index >= pd.to_datetime(start_date)]
     return out
@@ -194,7 +193,7 @@ def find_ecos_meta(api_key: str, table_keywords: list, item_targets: dict) -> tu
         print(f"   ⚠️ Table search failed: {e}")
         return None, {}
 
-    # 2. 아이템(국가) 코드 검색
+    # 2. 아이템 검색
     item_map = {}
     url_item = f"http://ecos.bok.or.kr/api/StatisticItemList/{api_key}/json/kr/1/100/{stat_code}"
     try:
@@ -334,17 +333,29 @@ def build_cpi_yoy_from_index(cpi_index: pd.Series) -> pd.Series:
     return yoy
 
 # =========================
-# Update routines
+# Update routines (DAILY)
 # =========================
 def update_daily(fred, sh):
     TAB_NAME = "data-daily"
     ws = ensure_worksheet(sh, TAB_NAME)
+    
     headers = ["Date"] + list(DAILY_FRED_SERIES.values())
-    header, _ = get_header_and_last_date(ws)
-    if header != headers: write_header(ws, headers)
-        
-    pull_start = (datetime.utcnow() - timedelta(days=30)).strftime("%Y-%m-%d")
-    print(f"📌 {TAB_NAME}: pulling from {pull_start}")
+    header, last_date = get_header_and_last_date(ws)
+    
+    # 헤더가 없거나 다르면 새로 작성 (그리고 강제 리로드)
+    if header != headers:
+        write_header(ws, headers)
+        last_date = None
+
+    # 🟢 [수정] 시트가 비었으면 2000년부터 Full Backfill
+    if not last_date:
+        pull_start = "2000-01-01"
+        print(f"📌 {TAB_NAME}: Sheet is empty. Full backfill from {pull_start}...")
+        is_full_reload = True
+    else:
+        pull_start = (datetime.utcnow() - timedelta(days=30)).strftime("%Y-%m-%d")
+        print(f"📌 {TAB_NAME}: Updating from {pull_start}...")
+        is_full_reload = False
     
     df_pulled = pd.DataFrame()
     for sid, col in DAILY_FRED_SERIES.items():
@@ -353,16 +364,65 @@ def update_daily(fred, sh):
             if s is None or s.empty: continue
             s = s.sort_index()
             s.index = pd.to_datetime(s.index)
-            df_pulled = s.to_frame(name=col) if df_pulled.empty else df_pulled.join(s.to_frame(name=col), how="outer")
+            # 중복 인덱스 제거
+            s = s[~s.index.duplicated(keep='last')]
+            
+            tmp = s.to_frame(name=col)
+            if df_pulled.empty:
+                df_pulled = tmp
+            else:
+                df_pulled = df_pulled.join(tmp, how="outer")
             time.sleep(0.1)
         except: pass
 
     if df_pulled.empty:
         print(f"   ℹ️ No new data found.")
         return
-    print(f"✅ {TAB_NAME}: Fetched {len(df_pulled)} rows.")
 
-# 🟢 [복구됨] Weekly OFR Update
+    # 🟢 [수정] 데이터 병합 및 쓰기 로직 복구
+    df_final = df_pulled
+    
+    if not is_full_reload:
+        # 기존 데이터가 있다면 읽어서 병합
+        try:
+            existing_records = ws.get_all_records()
+            if existing_records:
+                df_old = pd.DataFrame(existing_records)
+                if "Date" in df_old.columns:
+                    df_old["Date"] = pd.to_datetime(df_old["Date"])
+                    df_old = df_old.set_index("Date")
+                    # 새 데이터로 덮어쓰기 (concat 후 중복 제거)
+                    df_final = pd.concat([df_old, df_pulled], axis=0)
+                    df_final = df_final[~df_final.index.duplicated(keep='last')]
+        except Exception as e:
+            print(f"   ⚠️ Merge failed: {e}. Overwriting.")
+
+    # 정리
+    df_final = df_final.sort_index()
+    for col in headers[1:]:
+        if col not in df_final.columns:
+            df_final[col] = pd.NA
+    df_final = df_final[headers[1:]]
+
+    # 포맷팅
+    out = df_final.reset_index()
+    # 인덱스 이름이 없을 경우 대비
+    if "index" in out.columns and "Date" not in out.columns:
+        out.rename(columns={"index": "Date"}, inplace=True)
+    elif out.columns[0] != "Date":
+        out.rename(columns={out.columns[0]: "Date"}, inplace=True)
+
+    out["Date"] = pd.to_datetime(out["Date"]).dt.strftime("%Y-%m-%d")
+    out = out.fillna("")
+
+    # 시트 쓰기
+    ws.clear()
+    ws.update(range_name="A1", values=[headers] + out.values.tolist(), value_input_option="USER_ENTERED")
+    print(f"✅ {TAB_NAME}: Updated {len(out)} rows.")
+
+# =========================
+# Update routines (WEEKLY)
+# =========================
 def update_weekly_ofr(sh):
     tab = "data-weekly"
     ws = ensure_worksheet(sh, tab)
@@ -388,7 +448,7 @@ def update_weekly_ofr(sh):
     print(f"✅ {tab}: Appended {n} rows.")
 
 # =========================
-# ECOS MONTHLY (Full Reload)
+# Update routines (MONTHLY)
 # =========================
 def update_monthly_bok_only(sh):
     tab = "data-monthly"
@@ -398,7 +458,6 @@ def update_monthly_bok_only(sh):
         cols += [f"{ccy}_CPI_YoY", f"{ccy}_Unemployment", f"{ccy}_PolicyRate"]
     headers = ["Date"] + cols
 
-    # Full Reload: 2000년 부터
     start_dt = pd.Timestamp("2000-01-01")
     start_ym = start_dt.strftime("%Y%m")
     end_ym = pd.Timestamp.today().strftime("%Y%m")
@@ -417,7 +476,7 @@ def update_monthly_bok_only(sh):
     for ccy in CCY_LIST:
         target_ccy_cpi = "DE" if ccy == "XM" else ccy
         target_ccy_unemp = "DE" if ccy == "XM" else ccy
-        target_ccy_policy = ccy # 금리는 유지
+        target_ccy_policy = ccy 
         
         cpi_item = cpi_item_map.get(target_ccy_cpi, target_ccy_cpi)
         unemp_item = unemp_item_map.get(target_ccy_unemp, target_ccy_unemp)
@@ -440,7 +499,6 @@ def update_monthly_bok_only(sh):
             pr = ecos_stat_search(BOK_API_KEY, ECOS_POLICY, "M", start_ym, end_ym, item_code1=policy_item)
             pr = to_period_index(pr, "M")
 
-            # JP 금리 보정
             if ccy == "JP" and not pr.empty:
                 pr = pr.asfreq("MS").ffill().fillna(0)
 
@@ -478,7 +536,7 @@ def update_monthly_bok_only(sh):
     print(f"✅ {tab}: Full Reloaded {len(out)} rows.")
 
 # =========================
-# ECOS QUARTERLY (Full Reload)
+# Update routines (QUARTERLY)
 # =========================
 def update_quarterly_bok_only(sh):
     tab = "data-quarterly"
@@ -486,7 +544,6 @@ def update_quarterly_bok_only(sh):
     cols = [f"{ccy}_Growth" for ccy in CCY_LIST]
     headers = ["Date"] + cols
 
-    # Full Reload: 1990년 부터
     start_dt = pd.Timestamp("1990-01-01")
     
     def to_q_str(dt): return f"{dt.year}Q{((dt.month-1)//3)+1}"
@@ -543,22 +600,14 @@ def main():
         print(f"❌ Init Failed: {e}")
         return
 
-    # 1. Daily
-    try:
-        update_daily(fred, sh)
-    except Exception as e:
-        print(f"❌ Daily Update Failed: {e}")
-
-    # 2. Weekly (복구됨)
+    update_daily(fred, sh)
+    
     try:
         update_weekly_ofr(sh)
     except Exception as e:
         print(f"❌ Weekly Update Failed: {e}")
 
-    # 3. Monthly (Full Reload)
     update_monthly_bok_only(sh)
-    
-    # 4. Quarterly (Full Reload)
     update_quarterly_bok_only(sh)
     
     print("\n🎉 All updates completed.")

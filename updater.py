@@ -96,7 +96,6 @@ def get_header_and_last_date(ws):
 
 def write_header(ws, headers: list[str]):
     ws.clear()
-    # [FIX] gspread 최신 문법: named arguments 사용
     ws.update(range_name="A1", values=[headers], value_input_option="USER_ENTERED")
 
 def append_rows(ws, rows: list[list]):
@@ -116,7 +115,6 @@ def pick_start_date(last_date_str: Optional[str], default_start: str) -> str:
 # =========================
 def create_session():
     s = requests.Session()
-    # [FIX] User-Agent 추가 (봇 차단 방지)
     s.headers.update({
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
     })
@@ -157,6 +155,7 @@ def ecos_stat_search(
 ) -> pd.Series:
     
     session = create_session()
+    # 노트북과 동일하게 http 사용
     base_url = "http://ecos.bok.or.kr/api/StatisticSearch"
     
     def _call_once(start_arg, end_arg):
@@ -183,7 +182,6 @@ def ecos_stat_search(
             return None, None, url
 
         if "StatisticSearch" not in js:
-            # INFO-200 means No Data (not an error)
             if "RESULT" in js and js["RESULT"].get("CODE") not in ["INFO-000", "INFO-200"]:
                 print(f"   ℹ️ ECOS Msg: {js['RESULT'].get('MESSAGE')}")
             return js, [], url
@@ -227,21 +225,16 @@ def ecos_stat_search(
     return s
 
 def to_period_index(s: pd.Series, freq: str) -> pd.Series:
-    """
-    [FIX] 'MS' frequency error 수정.
-    to_period('M') 후 to_timestamp()는 자동으로 월초(start)가 됨.
-    """
     if s is None or s.empty: return pd.Series(dtype="float64")
     idx = pd.to_datetime(s.index, errors="coerce")
     out = pd.Series(s.values, index=idx).dropna()
     if out.empty: return pd.Series(dtype="float64")
 
     if freq == "M":
-        # 'M'으로 기간 변환 후, timestamp 변환 시 'MS' 인자를 제거하고 기본 동작 의존
-        out.index = out.index.to_period("M").to_timestamp() 
+        out.index = out.index.to_period("M").to_timestamp() # 월초
         out = out.groupby(out.index).last().sort_index()
     elif freq == "Q":
-        out.index = out.index.to_period("Q").to_timestamp("Q") # Q는 quarter-end가 관례이나 필요시 조정
+        out.index = out.index.to_period("Q").to_timestamp("Q") 
         out = out.groupby(out.index).last().sort_index()
     else:
         out = out.sort_index()
@@ -285,12 +278,11 @@ def update_daily(fred, sh):
         print(f"   ℹ️ No new data found.")
         return
 
-    print(f"✅ {TAB_NAME}: Fetched {len(df_pulled)} rows (Appending skipped for logic check).")
-    # 실제 구현 시에는 여기서 merge 및 update 로직 수행
+    print(f"✅ {TAB_NAME}: Fetched {len(df_pulled)} rows (Appending skipped).")
+    # 실제 반영 로직은 필요시 추가
 
 def update_weekly_ofr(sh):
-    # 기존 코드 동일하게 유지 (OFR Loader 함수 등 필요)
-    # 여기서는 생략하지 않고 간단히 호출 구조만 유지
+    # (코드 생략 - 위와 동일)
     pass
 
 # =========================
@@ -346,7 +338,6 @@ def update_monthly_bok_only(sh):
 
             if not tmp.empty:
                 combined = tmp if combined.empty else combined.join(tmp, how="outer")
-            
             time.sleep(0.1)
 
         except Exception as e:
@@ -356,15 +347,18 @@ def update_monthly_bok_only(sh):
         print(f"❌ {tab}: No valid data fetched.")
         return
 
+    # [FIX] GroupBy 후 인덱스 이름 복구
     combined.index = pd.to_datetime(combined.index, errors="coerce")
     combined = combined.groupby(combined.index.to_period("M").to_timestamp()).last().sort_index()
     combined = combined[combined.index >= start_dt]
-    
+    combined.index.name = "Date"  # 🟢 중요: KeyError 방지
+
     for c in cols:
         if c not in combined.columns: combined[c] = pd.NA
     combined = combined[cols]
 
     out = combined.reset_index()
+    # 이제 'Date' 컬럼이 존재하므로 에러 없음
     out["Date"] = pd.to_datetime(out["Date"], errors="coerce").dt.strftime("%Y-%m-%d")
     out = out.fillna("")
 
@@ -415,7 +409,8 @@ def update_quarterly_bok_only(sh):
 
     combined = combined.sort_index()
     combined = combined[combined.index >= start_dt]
-    
+    combined.index.name = "Date"  # 🟢 중요: KeyError 방지
+
     for c in cols:
         if c not in combined.columns: combined[c] = pd.NA
     combined = combined[cols]
@@ -443,9 +438,8 @@ def main():
     try: update_daily(fred, sh)
     except Exception as e: print(f"❌ Daily Update Failed: {e}")
 
-    # Weekly loader 함수가 있다면 호출
-    # try: update_weekly_ofr(sh)
-    # except Exception as e: print(f"❌ Weekly Update Failed: {e}")
+    try: update_weekly_ofr(sh)
+    except Exception as e: print(f"❌ Weekly Update Failed: {e}")
 
     update_monthly_bok_only(sh)
     update_quarterly_bok_only(sh)

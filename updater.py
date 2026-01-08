@@ -45,6 +45,21 @@ DAILY_FRED_SERIES = {
     "DGS30": "US_30Y",
 }
 
+# [신규] Daily BoK Series (시장금리)
+# 2Y는 KTB(010200010)와 MSB(010400002)를 가져와서 합칩니다.
+DAILY_BOK_SERIES = {
+    "KR_BaseRate": ("722Y001", "0101000"),
+    "KR_1Y": ("817Y002", "010190000"),
+    "KR_2Y": ("817Y002", "010200010"),      # KTB 2Y
+    "KR_2Y_MSB": ("817Y002", "010400002"),  # MSB 2Y (보조)
+    "KR_3Y": ("817Y002", "010200000"),
+    "KR_5Y": ("817Y002", "010210000"),
+    "KR_10Y": ("817Y002", "010220000"),
+    "KR_20Y": ("817Y002", "010230000"),
+    "KR_30Y": ("817Y002", "010240000"),
+    "KR_50Y": ("817Y002", "010250000"),
+}
+
 WEEKLY_OFR_MNEMONICS = {
     "NYPD-PD_AFtD_T-A": "UST_fails_to_deliver",
     "NYPD-PD_AFtD_AG-A": "AgencyGSE_fails_to_deliver",
@@ -52,10 +67,8 @@ WEEKLY_OFR_MNEMONICS = {
     "NYPD-PD_AFtD_OMBS-A": "OtherMBS_fails_to_deliver",
 }
 
-# 국가 목록
 CCY_LIST = ["US", "CA", "XM", "CH", "JP", "CN", "KR"]
 
-# 자동 검색용 키워드
 COUNTRY_NAME_MAP = {
     "US": ["미국", "U.S.A", "United States", "US"],
     "CA": ["캐나다", "Canada", "CA"],
@@ -333,21 +346,24 @@ def build_cpi_yoy_from_index(cpi_index: pd.Series) -> pd.Series:
     return yoy
 
 # =========================
-# Update routines (DAILY)
+# Update routines (DAILY) - [수정] KR 금리 추가
 # =========================
 def update_daily(fred, sh):
     TAB_NAME = "data-daily"
     ws = ensure_worksheet(sh, TAB_NAME)
     
-    headers = ["Date"] + list(DAILY_FRED_SERIES.values())
+    # 1. 헤더 구성 (FRED + BOK - MSB중복제거)
+    bok_headers = [k for k in DAILY_BOK_SERIES.keys() if k != "KR_2Y_MSB"]
+    headers = ["Date"] + list(DAILY_FRED_SERIES.values()) + bok_headers
+    
     header, last_date = get_header_and_last_date(ws)
     
-    # 헤더가 없거나 다르면 새로 작성 (그리고 강제 리로드)
+    # 헤더 변경 감지 시 리로드
     if header != headers:
         write_header(ws, headers)
         last_date = None
 
-    # 🟢 [수정] 시트가 비었으면 2000년부터 Full Backfill
+    # 2. 조회 기간 설정
     if not last_date:
         pull_start = "2000-01-01"
         print(f"📌 {TAB_NAME}: Sheet is empty. Full backfill from {pull_start}...")
@@ -357,6 +373,7 @@ def update_daily(fred, sh):
         print(f"📌 {TAB_NAME}: Updating from {pull_start}...")
         is_full_reload = False
     
+    # 3. FRED 데이터 수집
     df_pulled = pd.DataFrame()
     for sid, col in DAILY_FRED_SERIES.items():
         try:
@@ -364,7 +381,6 @@ def update_daily(fred, sh):
             if s is None or s.empty: continue
             s = s.sort_index()
             s.index = pd.to_datetime(s.index)
-            # 중복 인덱스 제거
             s = s[~s.index.duplicated(keep='last')]
             
             tmp = s.to_frame(name=col)
@@ -375,15 +391,48 @@ def update_daily(fred, sh):
             time.sleep(0.1)
         except: pass
 
+    # 4. [신규] BoK Daily 데이터 수집
+    start_ecos = pull_start.replace("-", "")
+    end_ecos = datetime.now().strftime("%Y%m%d")
+    
+    df_bok = pd.DataFrame()
+    for col_name, (stat_code, item_code) in DAILY_BOK_SERIES.items():
+        try:
+            # ecos_stat_search는 Daily('D')도 처리 가능
+            s = ecos_stat_search(BOK_API_KEY, stat_code, 'D', start_ecos, end_ecos, item_code1=item_code)
+            if not s.empty:
+                s.name = col_name
+                if df_bok.empty:
+                    df_bok = s.to_frame()
+                else:
+                    df_bok = df_bok.join(s, how="outer")
+            time.sleep(0.1)
+        except Exception as e:
+            print(f"   ⚠️ BoK Daily Error {col_name}: {e}")
+
+    # 5. [신규] 2Y 금리 병합 (KTB + MSB)
+    if not df_bok.empty:
+        if "KR_2Y" in df_bok.columns and "KR_2Y_MSB" in df_bok.columns:
+            # KR_2Y(국고채)가 비어있으면 MSB(통안채)로 채움
+            df_bok["KR_2Y"] = df_bok["KR_2Y"].combine_first(df_bok["KR_2Y_MSB"])
+            # MSB 컬럼 제거
+            df_bok.drop(columns=["KR_2Y_MSB"], inplace=True)
+    
+    # 6. FRED + BoK 병합
+    if not df_bok.empty:
+        if df_pulled.empty:
+            df_pulled = df_bok
+        else:
+            df_pulled = df_pulled.join(df_bok, how="outer")
+
     if df_pulled.empty:
         print(f"   ℹ️ No new data found.")
         return
 
-    # 🟢 [수정] 데이터 병합 및 쓰기 로직 복구
+    # 7. 기존 데이터와 병합 및 저장
     df_final = df_pulled
     
     if not is_full_reload:
-        # 기존 데이터가 있다면 읽어서 병합
         try:
             existing_records = ws.get_all_records()
             if existing_records:
@@ -391,22 +440,23 @@ def update_daily(fred, sh):
                 if "Date" in df_old.columns:
                     df_old["Date"] = pd.to_datetime(df_old["Date"])
                     df_old = df_old.set_index("Date")
-                    # 새 데이터로 덮어쓰기 (concat 후 중복 제거)
+                    
+                    # 새 데이터로 덮어쓰기 (concat 후 중복 인덱스 제거)
                     df_final = pd.concat([df_old, df_pulled], axis=0)
                     df_final = df_final[~df_final.index.duplicated(keep='last')]
         except Exception as e:
             print(f"   ⚠️ Merge failed: {e}. Overwriting.")
 
-    # 정리
+    # 컬럼 정리 (헤더 순서 보장)
     df_final = df_final.sort_index()
     for col in headers[1:]:
         if col not in df_final.columns:
             df_final[col] = pd.NA
     df_final = df_final[headers[1:]]
 
-    # 포맷팅
+    # 포맷팅 및 쓰기
     out = df_final.reset_index()
-    # 인덱스 이름이 없을 경우 대비
+    # 인덱스 이름 복구
     if "index" in out.columns and "Date" not in out.columns:
         out.rename(columns={"index": "Date"}, inplace=True)
     elif out.columns[0] != "Date":
@@ -415,7 +465,6 @@ def update_daily(fred, sh):
     out["Date"] = pd.to_datetime(out["Date"]).dt.strftime("%Y-%m-%d")
     out = out.fillna("")
 
-    # 시트 쓰기
     ws.clear()
     ws.update(range_name="A1", values=[headers] + out.values.tolist(), value_input_option="USER_ENTERED")
     print(f"✅ {TAB_NAME}: Updated {len(out)} rows.")
@@ -600,14 +649,22 @@ def main():
         print(f"❌ Init Failed: {e}")
         return
 
-    update_daily(fred, sh)
-    
+    # 1. Daily
+    try:
+        update_daily(fred, sh)
+    except Exception as e:
+        print(f"❌ Daily Update Failed: {e}")
+
+    # 2. Weekly
     try:
         update_weekly_ofr(sh)
     except Exception as e:
         print(f"❌ Weekly Update Failed: {e}")
 
+    # 3. Monthly (Full Reload)
     update_monthly_bok_only(sh)
+    
+    # 4. Quarterly (Full Reload)
     update_quarterly_bok_only(sh)
     
     print("\n🎉 All updates completed.")
